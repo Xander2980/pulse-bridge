@@ -17,9 +17,14 @@ class CustomFriendlyNameEntity(CoordinatorEntity):
         """Calculate state and override ATTR_FRIENDLY_NAME."""
 
         # First let the base implementation calculate state (returns a tuple)
-        result = super()._Entity__async_calculate_state()
+        # F-20: this hooks into a private (name mangled) HA method - if HA renames it, we must
+        # not break the complete entity - so we check if the method is still available
+        parent_impl = getattr(super(), "_Entity__async_calculate_state", None)
+        if parent_impl is None:
+            return None
+        result = parent_impl()
 
-        if not USE_NEW_FRIENDLY_NAME or self._attr_has_entity_name == False:
+        if not USE_NEW_FRIENDLY_NAME or not self._attr_has_entity_name or not isinstance(result, tuple):
             return result
 
         # Check if child class implements _friendly_name_internal
