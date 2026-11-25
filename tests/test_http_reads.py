@@ -164,7 +164,9 @@ async def test_successful_recursive_retry_is_not_reported_as_failure(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_mode_detection_continues_after_unsuccessful_probe():
+async def test_mode_detection_continues_after_unsuccessful_probe(monkeypatch):
+    # Isolate decoder fallback from setup retry policy (tested separately).
+    monkeypatch.setattr("pulse_bridge.bridge_client.SETUP_MAX_READ_RETRIES", 0)
     body = b'{"$type":"imp_data","kw":1.25}'
     bridge = bridge_with(Response(b"bad sml"), Response(body))
     bridge._com_mode = MODE_UNKNOWN
