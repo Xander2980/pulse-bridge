@@ -252,7 +252,7 @@ def test_setup_read_uses_fast_retries_and_time_budget(monkeypatch):
 
     assert delays, "a failed read must be retried"
     assert all(bridge_client.SETUP_MIN_RETRY_DELAY <= d <= bridge_client.SETUP_MAX_RETRY_DELAY for d in delays)
-    assert len(reads) <= bridge.MAX_READ_RETRIES + 1
+    assert len(reads) <= bridge_client.SETUP_MAX_READ_RETRIES + 1
     # the flags are reset for the normal polling
     assert bridge._fast_retry is False
     assert bridge._read_deadline is None
@@ -265,3 +265,51 @@ def test_read_timeout_respects_time_budget():
     assert bridge._read_timeout() <= 8.0
     bridge._read_deadline = bridge_client.time.monotonic() - 1.0
     assert bridge._read_timeout() == 5.0
+
+
+# ---------------------------------------------------------------- SML: repair of telegrams with cleared bit 5 (CRC error)
+def _sml_telegram() -> bytes:
+    """A synthetic SML telegram (GetListResponse with import total + power) incl. a valid CRC."""
+    entries = (
+        bytes.fromhex("77" "070100010800ff" "01" "01" "621e" "52ff" "590000000000bc614e" "01")
+        + bytes.fromhex("77" "070100100700ff" "01" "01" "621b" "5200" "55000001f4" "01")
+    )
+    get_list_res = bytes.fromhex("77" "01" "07010203040506" "01" "01" "72") + entries + bytes.fromhex("01" "01")
+    message = bytes.fromhex("76" "0500000001" "6200" "6200" "72" "630701") + get_list_res + bytes.fromhex("630000" "00")
+    body = b"\x1b\x1b\x1b\x1b\x01\x01\x01\x01" + message
+    padding = (4 - len(body) % 4) % 4
+    body += b"\x00" * padding + b"\x1b\x1b\x1b\x1b\x1a" + bytes([padding])
+    crc = bridge_client.sml_crc_x25.get_crc(body)
+    return body + bytes([crc >> 8, crc & 0xFF])
+
+
+def _clear_bit5(telegram: bytes, count: int) -> bytes:
+    data = bytearray(telegram)
+    positions = [i for i in range(8, len(data) - 8) if data[i] == 0x62][:count]
+    assert len(positions) == count
+    for pos in positions:
+        data[pos] &= ~0x20
+    return bytes(data)
+
+
+@pytest.mark.parametrize("flips", [1, 2])
+def test_sml_bit5_errors_are_repaired(flips):
+    telegram = _sml_telegram()
+    corrupted = _clear_bit5(telegram, flips)
+    assert corrupted != telegram
+    assert bridge_client.repair_sml_bit5_errors(corrupted) == telegram
+
+
+def test_sml_other_errors_are_not_repaired():
+    data = bytearray(_sml_telegram())
+    data[30] ^= 0x01
+    assert bridge_client.repair_sml_bit5_errors(bytes(data)) is None
+
+
+def test_mode_03_uses_repaired_telegram():
+    bridge = make_bridge()
+    ok = asyncio.run(bridge.mode_03_read_sml(_clear_bit5(_sml_telegram(), 2), retry_count=bridge.MAX_READ_RETRIES, log_payload=False))
+    assert ok is True
+    assert bridge.crc_repaired_count == 1
+    assert bridge._obis_values[IMPORT_OBIS].get_value() == pytest.approx(1234567.8)
+    assert bridge._obis_values["0100100700ff"].get_value() == 500

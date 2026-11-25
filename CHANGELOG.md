@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.6] – 2026-11-25
+
 ### Fixed
 
 - Read complete HTTP response bodies across network chunks while enforcing the size limit on all data and metadata endpoints.
@@ -16,6 +18,13 @@ All notable changes to this project are documented in this file. The format is b
 
 - Regression tests for streamed responses, failed reads, decoder fallback and metadata limits.
 - Tests using real Home Assistant classes for coordinator availability, config/reauth flows, entity recovery and setup/unload, plus a dedicated Python 3.14 CI job.
+
+## [1.0.5] – 2026-11-25
+
+### Fixed
+
+- Many SML telegrams were dropped with a CRC error (bridge delivers single bytes with bit 5 cleared, e.g. `b` → `B`). Such telegrams (up to two corrupted bytes) are now repaired; the repair is only used when the CRC matches again and the solution is unique. This also removes the delayed values caused by retries and the WebSocket fallback.
+- Setup/reconfigure failed with "no data" when the first reads had CRC errors: the data test now runs for up to 30 s with up to 10 fast retries.
 
 ## [1.0.4] – 2026-11-25
 
@@ -80,7 +89,9 @@ First release as the independent project **Pulse Bridge for Tibber**, based on [
 
 - Unit tests for the bridge client and a CI workflow for lint and tests.
 
-[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.5...v1.0.6
+[1.0.5]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.1...v1.0.2
