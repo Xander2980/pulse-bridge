@@ -94,11 +94,13 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._default_obis_codes = None
         self._node_device_id = None
         self._found_nodes = None
+        self._entered_node = None
 
     async def _test_connection(self, host, pwd, node_num):
         self._errors = {}
         self._node_device_id = None
         self._found_nodes = None
+        self._entered_node = None
         try:
             bridge = PulseBridgeClient(host=host, pwd=pwd, websession=async_get_clientsession(self.hass), node_num=node_num)
             try:
@@ -116,7 +118,9 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 elif bridge.node_id_list:
                     # the bridge answered, but has no node with the entered number - tell the user which ones exist
                     self._found_nodes = sorted(set(bridge.node_id_list))
-                    self._errors[CONF_NODE_NUMBER] = "node_not_found"
+                    self._entered_node = node_num
+                    # only one node at the bridge: it gets pre-filled in the form (see async_step_user)
+                    self._errors[CONF_NODE_NUMBER] = "node_prefilled" if len(self._found_nodes) == 1 else "node_not_found"
                     _LOGGER.warning(f"_test_connection(): bridge at {host} has no node {node_num} - available nodes: {self._found_nodes}")
                 else:
                     self._errors[CONF_HOST] = "unknown_device"
@@ -312,7 +316,8 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input,
             ),
             description_placeholders={"repo": "https://github.com/Xander2980/pulse-bridge",
-                                      "nodes": ", ".join(str(n) for n in (self._found_nodes or []))},
+                                      "nodes": ", ".join(str(n) for n in (self._found_nodes or [])),
+                                      "entered": str(self._entered_node) if self._entered_node is not None else ""},
             last_step=True,
             errors=self._errors,
         )

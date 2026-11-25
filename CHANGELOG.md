@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.2] – 2026-11-25
+
+### Changed
+
+- Setup: if the bridge reports exactly one Pulse and its node number was filled in, the message says so (“… the number has been filled in, please submit again”) instead of only listing the node numbers.
+- Tests: every error message used by the setup form must exist in all translations with the same placeholders.
+
 ## [1.0.1] – 2026-11-25
 
 ### Fixed
@@ -38,6 +45,7 @@ First release as the independent project **Pulse Bridge for Tibber**, based on [
 
 - Unit tests for the bridge client and a CI workflow for lint and tests.
 
-[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Xander2980/pulse-bridge/releases/tag/v1.0.0

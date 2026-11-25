@@ -12,7 +12,8 @@
       "no_data": "Es konnten keine Daten abgerufen werden",
       "unknown_mode": "Bitte prüfe die IP/Host bzw. die Node-Nummer - Wenn Du dir sicher bist, dass Deine Informationen korrekt sind, dann kommuniziert der Tibber Pulse über ein noch nicht implementiertes Protokoll. Bitte erstelle auf GitHub ein Issue mit DEBUG-Log-Ausgaben, damit Beispieldaten für das Protokoll vorliegen.",
       "unknown_device": "Die Bridge hat keinen Pulse gemeldet. Prüfe, ob der Pulse in der Weboberfläche der Bridge als Node angezeigt wird.",
-      "node_not_found": "Die Bridge kennt unter dieser Node-Nummer keinen Pulse. Gefundene Node-Nummern: {nodes}"
+      "node_not_found": "Die Bridge kennt unter dieser Node-Nummer keinen Pulse. Gefundene Node-Nummern: {nodes}",
+      "node_prefilled": "Unter Node-Nummer {entered} gibt es keinen Pulse. Die Bridge meldet ihn unter Node {nodes} – die Nummer ist eingetragen, bitte erneut absenden."
     },
     "step": {
       "reauth_confirm": {

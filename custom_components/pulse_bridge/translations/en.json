@@ -12,7 +12,8 @@
       "no_data": "Could not read any data from device",
       "unknown_mode": "Please check the IP/host or the provided Node Number - if you are sure that your information is correct, then the Tibber Pulse is communicating via an not-yet-implemented protocol - please create DEBUG log output and open an issue on GitHub so that sample data for this protocol is available.",
       "unknown_device": "The bridge did not report any Pulse. Check that the Pulse is listed as a node in the bridge's web interface.",
-      "node_not_found": "The bridge has no Pulse with this node number. Node numbers found: {nodes}"
+      "node_not_found": "The bridge has no Pulse with this node number. Node numbers found: {nodes}",
+      "node_prefilled": "There is no Pulse under node number {entered}. The bridge reports it as node {nodes} – the number has been filled in, please submit again."
     },
     "step": {
       "reauth_confirm": {
