@@ -2,7 +2,8 @@
   "config": {
     "abort": {
       "already_configured": "Integration ist bereits eingerichtet",
-      "reconfigure_successful": "Die Neukonfiguration war erfolgreich"
+      "reconfigure_successful": "Die Neukonfiguration war erfolgreich",
+      "reauth_successful": "Das Passwort wurde aktualisiert"
     },
     "error": {
       "login_failed": "Login fehlgeschlagen – bitte Host und/oder Passwort prüfen",
@@ -13,6 +14,13 @@
       "unknown_device": "Bitte prüfe die IP/Host bzw. die Node-Nummer - Es konnte keine Geräte-ID ermittelt werden - prüfe die URL: `http://admin:[BRIDGE_PASSWORD]@[DEINE_IP]/nodes.json`"
     },
     "step": {
+      "reauth_confirm": {
+        "title": "Tibber Pulse Bridge neu anmelden",
+        "description": "Die Bridge '{name}' hat das gespeicherte Passwort abgelehnt. Bitte gib das aktuelle Bridge-Passwort ein.",
+        "data": {
+          "password": "Bridge-Passwort"
+        }
+      },
       "user": {
         "description": "Bitte gib die lokalen Verbindungsdaten zu Deiner Tibber Pulse Bridge an.\n\n\nDu musst zuvor das 'webserver_force_enable'-Flag aktiviert haben!\n\n\nZusätzliche Informationen zur Einrichtung findest Du hier: {repo}",
         "data": {
@@ -32,6 +40,12 @@
           "node_num": "Experteneinstellung (wenn Dein Pulse nicht als Node1 in der Bridge gelistet wird)"
         }
       }
+    }
+  },
+  "issues": {
+    "endpoints_not_found": {
+      "title": "Tibber Pulse Bridge: Datenendpunkte nicht gefunden",
+      "description": "Die Bridge von '{name}' antwortet auch nach einer erneuten Firmware-Erkennung mit HTTP 404 für die Daten-/Metrik-Endpunkte. Möglicherweise wurde die Bridge-Firmware geändert. Bitte lade die Integration neu und erstelle ein Issue auf GitHub, falls das Problem bestehen bleibt."
     }
   },
   "entity": {

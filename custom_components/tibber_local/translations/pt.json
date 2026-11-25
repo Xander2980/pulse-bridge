@@ -1,7 +1,8 @@
 {
   "config": {
     "abort": {
-      "already_configured": "A integração já está configurada"
+      "already_configured": "A integração já está configurada",
+      "reauth_successful": "The password has been updated"
     },
     "error": {
       "login_failed": "Falha ao iniciar sessão - verifique o host e/ou a palavra-passe",
@@ -11,6 +12,13 @@
       "unknown_mode": "Por favor, verifique o IP/host ou o Número de Nó fornecido - se tem a certeza de que a sua informação está correta, o Tibber Pulse está a comunicar através de um protocolo que ainda não foi implementado - por favor, crie um log de DEBUG e abra uma questão no GitHub - necessito de dados de exemplo - Obrigado"
     },
     "step": {
+      "reauth_confirm": {
+        "title": "Re-authenticate Tibber Pulse Bridge",
+        "description": "The bridge '{name}' rejected the stored password. Please enter the current bridge password.",
+        "data": {
+          "password": "Your bridge password"
+        }
+      },
       "user": {
         "description": "Por favor, especifique a informação de conexão local para a sua Tibber Pulse Bridge.\n\n\nDeve ter ativado a flag 'webserver_force_enable'!\n\n\nSe precisar de ajuda com a configuração, consulte: {repo}",
         "data": {
@@ -22,6 +30,12 @@
           "ignore_errors": "Não registar erros ou avisos ao analisar dados"
         }
       }
+    }
+  },
+  "issues": {
+    "endpoints_not_found": {
+      "title": "Tibber Pulse Bridge: data endpoints not found",
+      "description": "The bridge of '{name}' answers with HTTP 404 for the data/metrics endpoints - even after a new firmware detection. The bridge firmware might have been changed. Please reload the integration and, if the problem persists, open an issue on GitHub."
     }
   },
   "entity": {

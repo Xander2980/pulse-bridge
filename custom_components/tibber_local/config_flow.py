@@ -6,7 +6,7 @@ import probatio
 
 
 from aiohttp import ClientError
-from homeassistant import config_entries, data_entry_flow
+from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult, SOURCE_RECONFIGURE
 from homeassistant.const import (
     CONF_ID,
@@ -39,14 +39,14 @@ from .const import (
     CONFIG_VERSION,
     CONFIG_MINOR_VERSION,
     OBIS_DATA_KEY,
-    UNKNOWN_SERIAL
+    UNKNOWN_SERIAL,
+    MODE_3_SML_1_04,
 )
-from .tibber_client import TibberLocalBridge
+from .tibber_client import TibberLocalBridge, BridgeAuthError, BridgeNotFoundError
 
 _LOGGER = logging.getLogger(__name__)
 
 
-@staticmethod
 def tibber_local_entries(hass: HomeAssistant):
     conf_hosts = []
     for entry in hass.config_entries.async_entries(DOMAIN):
@@ -59,11 +59,15 @@ def tibber_local_entries(hass: HomeAssistant):
             if CONF_NODE_NUMBER in entry.options:
                 a_node = entry.options[CONF_NODE_NUMBER]
 
+        # F-35: older entries might have stored the node number as float (3.0)
+        try:
+            a_node = int(a_node)
+        except (TypeError, ValueError):
+            pass
         conf_hosts.append(f"{a_node}@@{a_host}")
     return conf_hosts
 
 
-@staticmethod
 def _host_in_configuration_exists(a_host: str, a_node, hass: HomeAssistant) -> bool:
     if f"{a_node}@@{a_host}" in tibber_local_entries(hass):
         return True
@@ -112,7 +116,10 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._errors[CONF_HOST] = "unknown_mode"
                 _LOGGER.warning(f"_test_connection_tibber_local(): ValueError: {val_err}")
 
-        except (OSError, ClientError, asyncio.TimeoutError) as exc:
+        except BridgeAuthError as exc:
+            self._errors[CONF_PASSWORD] = "login_failed"
+            _LOGGER.warning(f"_test_connection_tibber_local(): {exc}")
+        except (OSError, ClientError, asyncio.TimeoutError, BridgeNotFoundError) as exc:
             self._errors[CONF_HOST] = "cannot_connect"
             _LOGGER.warning(f"_test_connection_tibber_local(): Could not connect to local Tibber Pulse Bridge at {host}, check host/ip address\n{type(exc).__name__} -> {exc}")
         return False
@@ -148,7 +155,10 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._errors[CONF_HOST] = "no_data"
                     return False
 
-        except (OSError, ClientError, asyncio.TimeoutError) as exc:
+        except BridgeAuthError as exc:
+            self._errors[CONF_PASSWORD] = "login_failed"
+            _LOGGER.warning(f"_test_data_available(): {exc}")
+        except (OSError, ClientError, asyncio.TimeoutError, BridgeNotFoundError) as exc:
             self._errors[CONF_HOST] = "cannot_connect"
             _LOGGER.warning(f"_test_data_available(): Could not read data from local Tibber Pulse Bridge at {host}, check host/ip address\n{type(exc).__name__} -> {exc}")
         return False
@@ -165,6 +175,39 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._default_obis_codes = entry_data.get(CONF_OBIS_CODES, None)
         return await self.async_step_user()
 
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
+        # F-09: the bridge rejected the stored password
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors = {}
+        entry = self._get_reauth_entry()
+        if user_input is not None:
+            pwd = user_input[CONF_PASSWORD]
+            bridge = TibberLocalBridge(host=entry.data[CONF_HOST], pwd=pwd,
+                                       websession=async_get_clientsession(self.hass),
+                                       node_num=int(entry.data.get(CONF_NODE_NUMBER, DEFAULT_NODE_NUMBER)),
+                                       com_mode=int(entry.data.get(CONF_MODE, MODE_3_SML_1_04)))
+            try:
+                await bridge.get_eui_for_node()
+                await bridge.update()
+            except BridgeAuthError:
+                errors[CONF_PASSWORD] = "login_failed"
+            except (OSError, ClientError, asyncio.TimeoutError, BridgeNotFoundError):
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_update_reload_and_abort(entry, data_updates={CONF_PASSWORD: pwd})
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=probatio.Schema({
+                probatio.Required(CONF_PASSWORD):
+                    selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)),
+            }),
+            description_placeholders={"name": entry.title},
+            errors=errors,
+        )
+
     async def async_step_user(self, user_input=None) -> ConfigFlowResult:
         self._errors = {}
         if user_input is not None:
@@ -178,18 +221,15 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             name = user_input[CONF_NAME]
             pwd = user_input[CONF_PASSWORD]
             use_polling = user_input[CONF_USE_POLLING]
-            scan = user_input[CONF_SCAN_INTERVAL]
-            node_num = user_input[CONF_NODE_NUMBER]
+            # F-35: the NumberSelector delivers floats (3.0) - the bridge expects 'node_id=3'
+            scan = int(user_input[CONF_SCAN_INTERVAL])
+            node_num = int(user_input[CONF_NODE_NUMBER])
             ignore_errors = user_input[CONF_IGNORE_READING_ERRORS]
 
             if self.source != SOURCE_RECONFIGURE:
-                if _config_title_exists(name, self.hass):
-                    self._errors[CONF_NAME] = "already_configured"
-                    raise data_entry_flow.AbortFlow("already_configured")
-                elif _host_in_configuration_exists(host, node_num, self.hass):
-                    self._errors[CONF_HOST] = "already_configured"
-                    self._errors[CONF_NODE_NUMBER] = "already_configured"
-                    raise data_entry_flow.AbortFlow("already_configured")
+                # F-22: the previously set '_errors' were never shown (the flow was aborted directly)
+                if _config_title_exists(name, self.hass) or _host_in_configuration_exists(host, node_num, self.hass):
+                    return self.async_abort(reason="already_configured")
 
             if await self._test_connection_tibber_local(host, pwd, node_num):
                 a_data = {CONF_NAME: name,
@@ -207,10 +247,13 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if self._default_obis_codes is not None:
                     a_data[CONF_OBIS_CODES] = self._default_obis_codes
 
-                self._abort_if_unique_id_configured()
                 if self.source == SOURCE_RECONFIGURE:
                     return self.async_update_reload_and_abort(entry=self._get_reconfigure_entry(), data=a_data)
                 else:
+                    # F-22: without a unique_id '_abort_if_unique_id_configured()' was a no-op
+                    if self._node_device_id is not None:
+                        await self.async_set_unique_id(f"{DOMAIN}_{self._node_device_id}".lower())
+                        self._abort_if_unique_id_configured()
                     return self.async_create_entry(title=name, data=a_data)
             else:
                 if self._node_device_id is not None:
@@ -241,7 +284,7 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     probatio.Required(CONF_SCAN_INTERVAL):
                         selector.NumberSelector(selector.NumberSelectorConfig(
                             step=1,
-                            min=1,
+                            min=2,
                             unit_of_measurement=UnitOfTime.SECONDS,
                             mode=selector.NumberSelectorMode.BOX)),
                     probatio.Required(CONF_NODE_NUMBER):
