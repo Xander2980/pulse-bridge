@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.7] – 2026-11-25
+
+### Fixed
+
+- SML CRC repair is limited to a single corrupted byte; two-byte repairs could accidentally match the 16-bit CRC and turn a corrupted telegram into a wrong meter reading.
+- A repaired telegram is only accepted if all energy totals are already known and increase by at most 10 kWh; otherwise it is discarded and read again.
+
 ## [1.0.6] – 2026-11-25
 
 ### Fixed
