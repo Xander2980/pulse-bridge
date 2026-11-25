@@ -18,8 +18,8 @@ from homeassistant.const import (
     EntityCategory,
 )
 from homeassistant.core import HomeAssistant, CoreState
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import entity_registry, device_registry as device_reg
+from homeassistant.exceptions import ConfigEntryNotReady, ConfigEntryAuthFailed
+from homeassistant.helpers import entity_registry, device_registry as device_reg, issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.event import async_track_time_interval, async_call_later
@@ -48,7 +48,6 @@ from .const import (
     NODES_KEY,
     METRICS_KEY,
     NODE_METRICS_CLASSIC,
-    NODE_METRIC_PREFIX,
     NODE_METRIC_MAP_CLASSIC,
     HUB_METRICS_CLASSIC,
     HUB_METRIC_PREFIX,
@@ -64,13 +63,14 @@ from .const import (
     BATTERY_LEVEL_ESTIMATED
 )
 from .entity import CustomFriendlyNameEntity
-from .tibber_client import TibberLocalBridge
+from .tibber_client import TibberLocalBridge, BridgeAuthError, BridgeNotFoundError, gen_log_list
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: Final = [Platform.BINARY_SENSOR, Platform.SENSOR]
 WEBSOCKET_WATCHDOG_INTERVAL: Final = timedelta(seconds=64)
 MASKED_KEYS: Final = ("host", "password")
+ISSUE_ENDPOINTS_NOT_FOUND: Final = "endpoints_not_found"
 
 def mask_map(d: dict) -> dict:
     # returns a copy - so we will never modify the data of the config_entry itself
@@ -164,7 +164,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry):
                     for a_device in all_devices:
                         _LOGGER.debug(f"async_migrate_entry(): PURGING device: {a_device.id}")
                         a_device_reg.async_remove_device(device_id=a_device.id)
-            except BaseException as ex:
+            except Exception as ex:
                 _LOGGER.warning(f"async_migrate_entry(): failed: {type(ex).__name__} - {ex}")
 
             hass.config_entries.async_update_entry(config_entry, version=CONFIG_VERSION, minor_version=CONFIG_MINOR_VERSION)
@@ -199,7 +199,9 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
             if hass.state is CoreState.running:
                 await coordinator.start_watchdog()
             else:
-                hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, coordinator.start_watchdog)
+                # F-12: the listener must be removed, when the entry is unloaded before HA has started
+                config_entry.async_on_unload(
+                    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, coordinator.start_watchdog))
 
         config_entry.async_on_unload(config_entry.add_update_listener(entry_update_listener))
         _LOGGER.info(f"async_setup_entry(): integration setup complete for {config_entry.entry_id}")
@@ -212,7 +214,10 @@ async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry):
         if DOMAIN in hass.data and config_entry.entry_id in hass.data[DOMAIN]:
             coordinator = hass.data[DOMAIN][config_entry.entry_id]
             await coordinator.bridge.ws_close_and_prepare_to_terminate()
-            coordinator.stop_watchdog()
+            # F-12: no device-registry timer must survive the unload
+            coordinator.stop_watchdog(schedule_registry_update=False)
+            coordinator.cancel_timers()
+            coordinator.async_delete_endpoint_issue()
             hass.data[DOMAIN].pop(config_entry.entry_id)
     return unload_ok
 
@@ -262,6 +267,8 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
 
             self._watchdog = None
             self._a_task = None
+            self._registry_timer_unsub = None
+            self._endpoint_issue_raised = False
 
             self._use_websocket_in_config = not config_entry.data.get(CONF_USE_POLLING, DEFAULT_USE_POLLING)
             self._device_info = None
@@ -275,7 +282,40 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
             self._integration_update_interval_in_seconds = config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
             super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(seconds=self._integration_update_interval_in_seconds))
 
+    def _schedule_device_registry_update(self, delay: float):
+        # F-12: keep the handle, so that the timer can be cancelled on unload
+        self.cancel_timers()
+        self._registry_timer_unsub = async_call_later(self.hass, delay, self.call_later_update_device_registry)
+
+    def cancel_timers(self):
+        if getattr(self, "_registry_timer_unsub", None) is not None:
+            try:
+                self._registry_timer_unsub()
+            except Exception:
+                pass
+            self._registry_timer_unsub = None
+
+    def async_create_endpoint_issue(self):
+        # F-36: let the user know (repairs), that the bridge does not provide the expected endpoints
+        if getattr(self, "_endpoint_issue_raised", False) or self._config_entry is None:
+            return
+        ir.async_create_issue(
+            self.hass, DOMAIN, f"{ISSUE_ENDPOINTS_NOT_FOUND}_{self._config_entry.entry_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_ENDPOINTS_NOT_FOUND,
+            translation_placeholders={"name": self._config_entry.title},
+        )
+        self._endpoint_issue_raised = True
+
+    def async_delete_endpoint_issue(self):
+        if not getattr(self, "_endpoint_issue_raised", False) or self._config_entry is None:
+            return
+        ir.async_delete_issue(self.hass, DOMAIN, f"{ISSUE_ENDPOINTS_NOT_FOUND}_{self._config_entry.entry_id}")
+        self._endpoint_issue_raised = False
+
     async def call_later_update_device_registry(self, now:Any):
+        self._registry_timer_unsub = None
         if not self._update_device_registry_is_running:
             self._update_device_registry_is_running = True
             try:
@@ -299,7 +339,7 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
                                     device.id,
                                     model=f_model
                                 )
-            except BaseException as ex:
+            except Exception as ex:
                 _LOGGER.warning(f"call_later_update_device_registry(): failed: {type(ex).__name__} - {ex}")
 
             self._update_device_registry_is_running = False
@@ -334,11 +374,12 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
         await self._async_watchdog_check()
         self._watchdog = async_track_time_interval(self.hass, self._async_watchdog_check, WEBSOCKET_WATCHDOG_INTERVAL)
 
-    def stop_watchdog(self):
+    def stop_watchdog(self, schedule_registry_update: bool = True):
         if hasattr(self, "_watchdog") and self._watchdog is not None:
             self._watchdog()
             self._watchdog = None
-            async_call_later(self.hass, 5, self.call_later_update_device_registry)
+            if schedule_registry_update:
+                self._schedule_device_registry_update(5)
 
     def _check_for_ws_task_and_cancel_if_running(self):
         if self._a_task is not None and not self._a_task.done():
@@ -346,7 +387,7 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 canceled = self._a_task.cancel()
                 _LOGGER.debug(f"_check_for_ws_task_and_cancel_if_running(): Watchdog: websocket connect task was CANCELED? {canceled}")
-            except BaseException as ex:
+            except Exception as ex:
                 _LOGGER.info(f"_check_for_ws_task_and_cancel_if_running(): Watchdog: websocket connect task cancel failed: {type(ex).__name__} - {ex}")
 
             self._a_task = None
@@ -366,12 +407,12 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
                     # since the new tibber FW websocket is so flaky, we must have implemented
                     # a check, if aiohttp client is supported, we must extend the delay from 10 to
                     # 25 seconds in order to be sure, that our tests have passed...
-                    async_call_later(self.hass, 25, self.call_later_update_device_registry)
+                    self._schedule_device_registry_update(25)
             else:
                 _LOGGER.debug(f"_async_watchdog_check(): Watchdog: websocket is connected")
                 if not self.bridge.ws_check_last_update():
                     self._check_for_ws_task_and_cancel_if_running()
-                    async_call_later(self.hass, 5, self.call_later_update_device_registry)
+                    self._schedule_device_registry_update(5)
 
     async def init_on_load(self, use_websocket: bool = False):
         if self.device_id is not None and len(str(self.device_id)) > 0:
@@ -389,7 +430,10 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
                         new_config_entry_data = {**self.config_entry.data, **{CONF_DEVICE_ID: self.bridge.node_device_id}}
                         self.hass.config_entries.async_update_entry(self.config_entry, data=new_config_entry_data)
 
-            except BaseException as exception:
+            except BridgeAuthError as exception:
+                # F-09: start the reauth flow
+                raise ConfigEntryAuthFailed(str(exception)) from exception
+            except Exception as exception:
                 _LOGGER.warning(f"init_on_load(): (self.bridge.get_eui_for_node) caused {exception}")
 
         # we must check if the new FW is active (and we must use the adjusted URLs
@@ -411,11 +455,21 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
                     METRICS_KEY: self.bridge._metrics_data
                 })
 
-            except BaseException as exception:
+            except BridgeAuthError as exception:
+                # F-09: start the reauth flow
+                raise ConfigEntryAuthFailed(str(exception)) from exception
+            except BridgeNotFoundError as exception:
+                self.async_create_endpoint_issue()
+                _LOGGER.warning(f"init_on_load(): caused {type(exception).__name__} - {exception}")
+            except Exception as exception:
                 _LOGGER.warning(f"init_on_load(): caused {type(exception).__name__} - {exception}")
 
+        # the FW detection might have been re-run (F-36)
+        self._use_classic = self.bridge.use_classic
+
         if _LOGGER.isEnabledFor(logging.INFO):
-            _LOGGER.info(f"init_on_load(): after init - found OBIS entries: '{tibber_client.gen_log_list(bridge_data)}'")
+            # F-30: 'tibber_client' was never imported - this line raised a NameError
+            _LOGGER.info(f"init_on_load(): after init - found OBIS entries: '{gen_log_list(bridge_data)}'")
 
         # was the init successful ?!
         if use_websocket:
@@ -452,6 +506,10 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
                         _LOGGER.debug(f"_async_update_data(): called")
                         await self.bridge.update()
 
+            # F-36: the bridge FW might have been changed (OTA) - and the client has re-detected it
+            self._use_classic = self.bridge.use_classic
+            self.async_delete_endpoint_issue()
+
             # we always return a DICT of the current data in the bridge objects...
             return {
                 OBIS_DATA_KEY: self.bridge._obis_values,
@@ -459,6 +517,13 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
                 METRICS_KEY: self.bridge._metrics_data,
             }
 
+        except BridgeAuthError as exception:
+            # F-09: HA will start the reauth flow
+            raise ConfigEntryAuthFailed(str(exception)) from exception
+        except BridgeNotFoundError as exception:
+            # F-36: endpoints still missing after the FW re-detection
+            self.async_create_endpoint_issue()
+            raise UpdateFailed(str(exception)) from exception
         except UpdateFailed as exception:
             _LOGGER.warning(f"_async_update_data(): UpdateFailed: {type(exception).__name__} - {exception}")
             raise UpdateFailed() from exception
@@ -577,12 +642,13 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
                 if isinstance(a_obis_obj.value, Number):
                     if hasattr(a_obis_obj, 'scaler'):
                         try:
-                            return a_obis_obj.value * 10 ** int(a_obis_obj.scaler) / divisor
+                            # F-16: avoid float artefacts like 1234.5000000001
+                            return round(a_obis_obj.value * 10 ** int(a_obis_obj.scaler) / divisor, 6)
                         except (TypeError, ValueError):
                             _LOGGER.info(f"_get_numeric_value_internal(): could not convert scaler to int for key {key} - {a_obis_obj}")
                             return None
                     else:
-                        return a_obis_obj.value / divisor
+                        return round(a_obis_obj.value / divisor, 6)
 
         return None
 
