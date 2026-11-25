@@ -1,0 +1,22 @@
+name: Lint & Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-python@v6"
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: pip install -r requirements_dev.txt
+      - name: Ruff (bugs, async pitfalls)
+        run: ruff check --select F,E9,B,ASYNC --ignore F541 custom_components tests
+      - name: No 'except BaseException' (swallows CancelledError)
+        run: "! grep -rn 'except BaseException' custom_components"
+      - name: Pytest
+        run: pytest -q
