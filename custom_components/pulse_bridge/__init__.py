@@ -111,7 +111,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
                 config_entry.async_on_unload(
                     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, coordinator.start_watchdog))
 
-        config_entry.async_on_unload(config_entry.add_update_listener(entry_update_listener))
+        # no update listener: reconfigure/reauth reload the entry via 'async_update_reload_and_abort()'
+        # (HA 2026.12 does not allow both anymore)
         _LOGGER.info(f"async_setup_entry(): integration setup complete for {config_entry.entry_id}")
         return True
 
@@ -128,11 +129,6 @@ async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry):
             coordinator.async_delete_endpoint_issue()
             hass.data[DOMAIN].pop(config_entry.entry_id)
     return unload_ok
-
-async def entry_update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
-    _LOGGER.debug(f"entry_update_listener(): called for entry: {config_entry.entry_id}")
-    await hass.config_entries.async_reload(config_entry.entry_id)
-
 
 class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
 

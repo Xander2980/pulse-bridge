@@ -1,5 +1,6 @@
 # Pulse Bridge for Tibber – Copyright 2026 Xander (Xander2980). Apache-2.0, see LICENSE.
 import asyncio
+import json
 
 import pytest
 
@@ -189,3 +190,36 @@ def test_matching_node_sets_device_id():
     bridge = PulseBridgeClient(host="127.0.0.1", pwd="test", websession=_FakeSession(_FakeResponse(200, nodes)), node_num=3)
     asyncio.run(bridge.get_eui_for_node())
     assert bridge.node_device_id == "aabbccddeeff0011"
+
+
+# ---------------------------------------------------------------- reconfigure: truncated node_params.json (FW 2026_09)
+def _node_params_text(count: int) -> str:
+    params = [{"param_id": 27, "name": "meter_mode", "size": 1, "type": "uint8", "value": [3]}]
+    params += [{"param_id": 100 + i, "name": f"param_{i}", "size": 1, "type": "uint8", "value": [i]} for i in range(count)]
+    return json.dumps(params)
+
+
+def test_tolerant_json_list_complete_and_truncated():
+    text = _node_params_text(50)
+    assert len(bridge_client.parse_json_list_tolerant(text)) == 51
+    truncated = text[:1000]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(truncated)
+    items = bridge_client.parse_json_list_tolerant(truncated)
+    assert items[0]["name"] == "meter_mode"
+    assert all(isinstance(item, dict) for item in items)
+    assert 1 < len(items) < 51
+    assert bridge_client.parse_json_list_tolerant("no json") == []
+    assert bridge_client.parse_json_list_tolerant('{"a": 1}') == []
+
+
+class _FakeTextResponse(_FakeResponse):
+    async def text(self):
+        return self._payload
+
+
+def test_meter_mode_is_read_from_truncated_node_params():
+    truncated = _node_params_text(200)[:7000]
+    bridge = PulseBridgeClient(host="127.0.0.1", pwd="test", websession=_FakeSession(_FakeTextResponse(200, truncated)), node_num=3)
+    asyncio.run(bridge.detect_com_mode_from_node_param27())
+    assert bridge._com_mode == bridge_client.MODE_3_SML_1_04

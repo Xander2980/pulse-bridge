@@ -301,7 +301,7 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     probatio.Required(CONF_SCAN_INTERVAL):
                         selector.NumberSelector(selector.NumberSelectorConfig(
                             step=1,
-                            min=2,
+                            min=1,
                             unit_of_measurement=UnitOfTime.SECONDS,
                             mode=selector.NumberSelectorMode.BOX)),
                     probatio.Required(CONF_NODE_NUMBER):

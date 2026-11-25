@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.3] – 2026-11-25
+
+### Fixed
+
+- Reconfigure/setup failed with “please check the IP/host or the node number …” on bridges with firmware 2026_09: the bridge cuts `node_params.json` after 7000 characters, the invalid JSON was discarded and the meter mode (SML) was not detected. The complete parameters in front of the cut are now used.
+- Removed the config entry update listener: reconfigure and re-authentication already reload the entry. Home Assistant 2026.12 no longer allows both.
+
+### Changed
+
+- Polling interval: minimum is now 1 second (only used with the polling procedure; the WebSocket mode already updates up to once per second).
+
 ## [1.0.2] – 2026-11-25
 
 ### Changed
@@ -45,7 +56,8 @@ First release as the independent project **Pulse Bridge for Tibber**, based on [
 
 - Unit tests for the bridge client and a CI workflow for lint and tests.
 
-[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Xander2980/pulse-bridge/releases/tag/v1.0.0

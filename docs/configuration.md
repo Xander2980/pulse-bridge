@@ -8,7 +8,7 @@
 | IP or hostname | Address of the Pulse Bridge in your LAN (default `tibber-bridge`, the factory hostname of the bridge). A fixed IP address is recommended. |
 | Bridge password | The password printed on the bridge below the QR code (pattern `XXXX-XXXX`, including the dash). |
 | Use old polling procedure | Off (default): the bridge pushes data via WebSocket. On: data is requested cyclically via HTTP. Only use it if the WebSocket connection causes problems or another client already uses the WebSocket of this node. |
-| Polling interval | Seconds between two HTTP requests (minimum 2 s, default 10 s). Only used with the polling procedure. |
+| Polling interval | Seconds between two HTTP requests (minimum 1 s, default 10 s). Only used with the polling procedure. |
 | Node number (expert setting) | Node ID of the reading head on the bridge (default `1`). Check it on the *Pulse* page of the bridge web frontend. |
 | Do not LOG errors or warnings while parsing data | Suppresses log messages about invalid data packets. |
 

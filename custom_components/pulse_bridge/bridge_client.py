@@ -73,6 +73,38 @@ async def read_limited(response, limit: int = MAX_RESPONSE_BYTES) -> bytes:
         raise ValueError(f"response too large: > {limit} bytes")
     return data
 
+
+def parse_json_list_tolerant(text: str) -> list:
+    """Parse a JSON array - if the text is truncated, return all complete objects in front of the cut.
+
+    The bridge (FW 2026_09) cuts 'node_params.json' after 7000 characters, so the response is no
+    valid JSON anymore - but the parameters at the beginning (like 'meter_mode') are complete."""
+    try:
+        result = json.loads(text)
+        return result if isinstance(result, list) else []
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    items = []
+    pos = text.find("[")
+    if pos < 0:
+        return items
+    pos += 1
+    length = len(text)
+    while pos < length:
+        while pos < length and text[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= length or text[pos] == "]":
+            break
+        try:
+            item, pos = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            # the truncated (last) object
+            break
+        items.append(item)
+    return items
+
 # 'UNITS' maps the sml unit-code to its name - here we need the opposite direction [some names are used by
 # multiple codes - like 'm³' - so we build it reversed: the first (lowest) code wins, as it did before]
 UNIT_CODE_BY_NAME: Final = {a_name: a_code for a_code, a_name in reversed(UNITS.items())}
@@ -462,9 +494,10 @@ class PulseBridgeClient:
                 try:
                     res.raise_for_status()
                     if res.status == 200:
-                        json_resp = await res.json()
+                        # the bridge truncates this response (FW 2026_09: after 7000 chars) - so we parse it tolerant
+                        json_resp = parse_json_list_tolerant(await res.text())
                         for a_parm_obj in json_resp:
-                            if a_parm_obj is not None:
+                            if isinstance(a_parm_obj, dict):
                                 if a_parm_obj.get("param_id", -1) == 27 or a_parm_obj.get("name", "") == "meter_mode":
                                     if 'value' in a_parm_obj:
                                         self._com_mode = a_parm_obj['value'][0]
