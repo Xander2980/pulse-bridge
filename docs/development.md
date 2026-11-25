@@ -16,7 +16,7 @@
 
 ## Local setup
 
-Python 3.13 is used in CI.
+The lightweight client tests use Python 3.13 in CI. Tests against the declared minimum Home Assistant release (2026.9.0) use Python 3.14; that release requires Python 3.14.2 or newer.
 
 ```bash
 python -m venv .venv
@@ -31,7 +31,18 @@ ruff check --select F,E9,B,ASYNC --ignore F541 custom_components tests
 pytest -q
 ```
 
-The CI workflow `tests.yaml` runs the same commands and additionally fails if `except BaseException` appears in `custom_components` (it would swallow `asyncio.CancelledError`).
+The CI workflow `tests.yaml` runs the same commands and additionally fails if `except BaseException` appears in `custom_components` (it would swallow `asyncio.CancelledError`). Without Home Assistant installed, `test_integration.py` is skipped and the client tests use lightweight HA stubs.
+
+To run the complete suite against real Home Assistant classes, use a separate Python 3.14 environment:
+
+```bash
+python3.14 -m venv .venv-ha
+source .venv-ha/bin/activate     # Windows: .venv-ha\Scripts\activate
+pip install -r requirements_test_ha.txt
+pytest -q
+```
+
+The dedicated `test-home-assistant` CI job runs this suite. It imports the actual integration package and checks HTTP fallback, failure/recovery availability, config and reauthentication flows, status entities with initially missing metadata, and setup/unload cleanup. Device communication is mocked; these tests do not require a bridge and do not replace a live-device test.
 
 `hassfest.yaml` validates the integration with Home Assistant's hassfest, `hacs.yaml` runs the HACS action (only in the main repository, not in forks).
 

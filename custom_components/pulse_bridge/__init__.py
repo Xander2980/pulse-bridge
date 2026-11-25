@@ -134,7 +134,7 @@ class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, config_entry):
         if config_entry is None:
             _LOGGER.info(f"PulseBridgeDataUpdateCoordinator(): created - just to parse the serial number...")
-            super().__init__(hass, _LOGGER, name=DOMAIN)
+            super().__init__(hass, _LOGGER, name=DOMAIN, config_entry=None)
         else:
             self._host = config_entry.data[CONF_HOST]
             the_pwd = config_entry.data[CONF_PASSWORD]
@@ -183,7 +183,7 @@ class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
             # fw is active
             self._use_classic = True
             self._integration_update_interval_in_seconds = config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-            super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(seconds=self._integration_update_interval_in_seconds))
+            super().__init__(hass, _LOGGER, name=DOMAIN, config_entry=config_entry, update_interval=timedelta(seconds=self._integration_update_interval_in_seconds))
 
     def _schedule_device_registry_update(self, delay: float):
         # F-12: keep the handle, so that the timer can be cancelled on unload
@@ -394,20 +394,8 @@ class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
                 if self.bridge.ws_connected:
                     _LOGGER.debug("_async_update_data(): called (but websocket is active - no data will be requested!)")
                 else:
-                    should_call_update = True
-                    # we do not have an active websocket connection... but if the use of websocket is configured...
-                    if self._use_websocket_in_config:
-                        # then check, if there has been at least ONE update of the websocket...
-                        if self.bridge._ws_LAST_UPDATE == 0:
-                            if self.bridge.ws_supported:
-                                # and if we have somehow already some data...
-                                if len(self.bridge._obis_values) > 0:
-                                    should_call_update = False
-                                    _LOGGER.info(f"_async_update_data(): skipping cause the use of websocket is configured, but we have not read yet a message from the socket yet (we are probably still in init)")
-
-                    if should_call_update:
-                        _LOGGER.debug(f"_async_update_data(): called")
-                        await self.bridge.update()
+                    # HTTP remains the fallback until the websocket is connected.
+                    await self.bridge.update()
 
             # F-36: the bridge FW might have been changed (OTA) - and the client has re-detected it
             self._use_classic = self.bridge.use_classic

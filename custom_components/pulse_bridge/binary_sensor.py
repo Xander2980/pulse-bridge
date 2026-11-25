@@ -20,8 +20,6 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, async_add_entities):
     coordinator = hass.data[DOMAIN][config_entry.entry_id]
     entities = []
-    nodes_values = coordinator.data.get(NODES_KEY, {}) if coordinator.data else {}
-    metrics_values = coordinator.data.get(METRICS_KEY, {}) if coordinator.data else {}
 
     for description in BINARY_SENSOR_TYPES:
         if description.tag is None:
@@ -30,9 +28,9 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
 
         should_add = False
         if description.tag.section == NODES_KEY:
-            should_add = bool(nodes_values)
+            should_add = True
         elif description.tag.section == METRICS_KEY:
-            should_add = bool(metrics_values)
+            should_add = True
 
         if should_add:
             entities.append(PulseBridgeBinarySensor(coordinator, description))

@@ -14,6 +14,7 @@ from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PKG_DIR = ROOT / "custom_components" / "pulse_bridge"
+HA_INSTALLED = importlib.util.find_spec("homeassistant") is not None
 
 
 class _StubMeta(type):
@@ -51,7 +52,7 @@ class _StubModule(types.ModuleType):
 
 
 def _install_ha_stubs():
-    if importlib.util.find_spec("homeassistant") is not None:
+    if HA_INSTALLED:
         return
     for mod_name in (
         "homeassistant",

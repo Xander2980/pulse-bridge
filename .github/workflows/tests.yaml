@@ -20,3 +20,15 @@ jobs:
         run: "! grep -rn 'except BaseException' custom_components"
       - name: Pytest
         run: pytest -q
+
+  test-home-assistant:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-python@v6"
+        with:
+          python-version: "3.14"
+      - name: Install Home Assistant test dependencies
+        run: pip install -r requirements_test_ha.txt
+      - name: Test with real Home Assistant
+        run: pytest -q

@@ -1,0 +1,3 @@
+# Test the declared minimum Home Assistant release with its real APIs.
+-r requirements_dev.txt
+homeassistant==2026.9.0

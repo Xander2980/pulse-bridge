@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- Read complete HTTP response bodies across network chunks while enforcing the size limit on all data and metadata endpoints.
+- Report HTTP and decoding failures instead of treating cached meter readings as a successful update; preserve authentication and endpoint errors through retries.
+- Keep HTTP fallback active when a classic-firmware WebSocket has never connected.
+- Create status entities even if metadata is initially unavailable, allowing them to recover without reloading the integration.
+- Pass the config entry explicitly to Home Assistant's data coordinator.
+
+### Added
+
+- Regression tests for streamed responses, failed reads, decoder fallback and metadata limits.
+- Tests using real Home Assistant classes for coordinator availability, config/reauth flows, entity recovery and setup/unload, plus a dedicated Python 3.14 CI job.
+
 ## [1.0.4] – 2026-11-25
 
 ### Fixed

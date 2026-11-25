@@ -155,6 +155,13 @@ class _FakeResponse:
     def __init__(self, status, payload):
         self.status = status
         self._payload = payload
+        self.content_length = None
+        self.content = self
+        self._body = (payload.encode() if isinstance(payload, str) else json.dumps(payload).encode())
+
+    async def read(self, n):
+        chunk, self._body = self._body[:n], self._body[n:]
+        return chunk
 
     async def __aenter__(self):
         return self

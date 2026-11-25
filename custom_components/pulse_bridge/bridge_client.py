@@ -68,14 +68,22 @@ class BridgeNotFoundError(Exception):
     """F-36: the bridge returned 404 for a data/metrics URL (firmware change?)."""
 
 
+class BridgeReadError(aiohttp.ClientError):
+    """The bridge did not return fresh, decodable meter data."""
+
+
 async def read_limited(response, limit: int = MAX_RESPONSE_BYTES) -> bytes:
     """F-28: read a response body, but never more than 'limit' bytes."""
     if response.content_length is not None and response.content_length > limit:
         raise ValueError(f"response too large: {response.content_length} bytes")
-    data = await response.content.read(limit + 1)
-    if len(data) > limit:
-        raise ValueError(f"response too large: > {limit} bytes")
-    return data
+    data = bytearray()
+    while True:
+        chunk = await response.content.read(min(64 * 1024, limit + 1 - len(data)))
+        if not chunk:
+            return bytes(data)
+        data.extend(chunk)
+        if len(data) > limit:
+            raise ValueError(f"response too large: > {limit} bytes")
 
 
 def parse_json_list_tolerant(text: str) -> list:
@@ -360,12 +368,12 @@ class PulseBridgeClient:
                     try:
                         # for whatever reason the test.json endpoint is returning a plain-text that can't be read via
                         # 'response.json()'
-                        resp_str = await response.text()
-                        while len(resp_str) > 1 and resp_str[0] != '{':
-                            resp_str = resp_str[1:]
-                        while len(resp_str) > 1 and resp_str[-1] != '}':
-                            resp_str = resp_str[:-1]
-                        self._test_data = json.loads(resp_str)
+                        payload = await read_limited(response)
+                        start = payload.find(b"{")
+                        end = payload.rfind(b"}")
+                        if start < 0 or end < start:
+                            raise ValueError("firmware response contains no JSON object")
+                        self._test_data = json.loads(payload[start:end + 1])
                     except Exception as exc:
                         _LOGGER.debug(f"_check_api_endpoint(): could not read test data {type(exc).__name__}: {exc}")
                     return True
@@ -413,7 +421,7 @@ class PulseBridgeClient:
                 try:
                     res.raise_for_status()
                     if res.status == 200:
-                        json_resp = await res.json()
+                        json_resp = json.loads(await read_limited(res))
                         for a_node_obj in json_resp:
                             a_eui = a_node_obj.get("eui", None)
                             if not a_eui:
@@ -484,7 +492,10 @@ class PulseBridgeClient:
     async def _check_modes_internal_impl(self, mode_1: int, mode_2: int):
         self._read_deadline = time.monotonic() + SETUP_READ_TIME_BUDGET
         _LOGGER.debug(f"detect_com_mode is {self._com_mode}: will try to read {mode_1}")
-        await self.read_bridge_data(mode_1, retry_count=0, log_payload=True)
+        try:
+            await self.read_bridge_data(mode_1, retry_count=0, log_payload=True)
+        except BridgeReadError:
+            pass  # A failed decoder probe must still allow the alternative mode.
         if len(self._obis_values) > 0:
             self._com_mode = mode_1
             _LOGGER.debug(f"detect_com_mode(): 1 SUCCESS -> _com_mode: {self._com_mode}")
@@ -492,7 +503,10 @@ class PulseBridgeClient:
             if (mode_2 != -1):
                 _LOGGER.debug(f"detect_com_mode(): 1 is {self._com_mode}: {mode_1} failed - will try to read {mode_2}")
                 self._read_deadline = time.monotonic() + SETUP_READ_TIME_BUDGET
-                await self.read_bridge_data(mode_2, retry_count=0, log_payload=True)
+                try:
+                    await self.read_bridge_data(mode_2, retry_count=0, log_payload=True)
+                except BridgeReadError:
+                    pass
                 if len(self._obis_values) > 0:
                     self._com_mode = mode_2
                     _LOGGER.debug(f"detect_com_mode(): 2 SUCCESS -> _com_mode: {self._com_mode}")
@@ -511,7 +525,7 @@ class PulseBridgeClient:
                     res.raise_for_status()
                     if res.status == 200:
                         # the bridge truncates this response (FW 2026_09: after 7000 chars) - so we parse it tolerant
-                        json_resp = parse_json_list_tolerant(await res.text())
+                        json_resp = parse_json_list_tolerant((await read_limited(res)).decode("utf-8"))
                         for a_parm_obj in json_resp:
                             if isinstance(a_parm_obj, dict):
                                 if a_parm_obj.get("param_id", -1) == 27 or a_parm_obj.get("name", "") == "meter_mode":
@@ -597,9 +611,11 @@ class PulseBridgeClient:
                     raise BridgeNotFoundError(f"bridge returned 404 for {self.url_data}")
 
             elif res.status != 200:
-                _LOGGER.warning(f"access to bridge failed with code {res.status} - res: {res}")
+                res.raise_for_status()
+                raise BridgeReadError(f"unexpected bridge HTTP status: {res.status}")
 
             else:
+                previous_values = self._obis_values
                 try:
                     # F-28: never read more than MAX_RESPONSE_BYTES
                     payload = await read_limited(res)
@@ -620,7 +636,10 @@ class PulseBridgeClient:
                 except (BridgeAuthError, BridgeNotFoundError):
                     raise
                 except Exception as exc:
-                    _LOGGER.warning(f"access to bridge failed with exception: {type(exc).__name__} - {exc}")
+                    raise BridgeReadError("failed to decode bridge meter data") from exc
+
+                if self._obis_values is previous_values:
+                    raise BridgeReadError("bridge returned no decodable meter data")
 
         if retry_after_fw_change:
             await self.read_bridge_data(mode=mode, retry_count=retry_count, log_payload=log_payload, fw_redetected=True)
@@ -749,6 +768,8 @@ class PulseBridgeClient:
                 return True
             return False
 
+        except (BridgeAuthError, BridgeNotFoundError, BridgeReadError):
+            raise
         except Exception as exc:
             if not self.ignore_parse_errors:
                 # F-27: the payload is only logged on DEBUG level
@@ -856,6 +877,8 @@ class PulseBridgeClient:
                 return False
 
         # F-08: no 'BaseException' - CancelledError must not be swallowed
+        except (BridgeAuthError, BridgeNotFoundError, BridgeReadError):
+            raise
         except Exception as exc:
             if not self.ignore_parse_errors:
                 # F-27: the payload is only logged on DEBUG level
