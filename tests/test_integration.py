@@ -111,10 +111,28 @@ async def test_connected_websocket_does_not_poll(coordinator):
     coordinator.bridge.update.assert_not_awaited()
 
 
+async def test_isolated_read_failures_keep_last_values(coordinator):
+    entity = integration.PulseBridgeEntity(coordinator, SENSOR_TYPES[0])
+    data = coordinator.data
+    coordinator.bridge.update.side_effect = BridgeReadError("invalid meter data")
+    for _ in range(integration.MAX_TOLERATED_READ_ERRORS):
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+        assert entity.available
+        assert coordinator.data is data
+    # a successful read resets the counter
+    coordinator.bridge.update.side_effect = None
+    await coordinator.async_refresh()
+    coordinator.bridge.update.side_effect = BridgeReadError("invalid meter data")
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success
+
+
 async def test_read_failure_marks_entities_unavailable_and_recovers(coordinator):
     entity = integration.PulseBridgeEntity(coordinator, SENSOR_TYPES[0])
     coordinator.bridge.update.side_effect = BridgeReadError("invalid meter data")
-    await coordinator.async_refresh()
+    for _ in range(integration.MAX_TOLERATED_READ_ERRORS + 1):
+        await coordinator.async_refresh()
     assert not coordinator.last_update_success
     assert isinstance(coordinator.last_exception, UpdateFailed)
     assert not entity.available

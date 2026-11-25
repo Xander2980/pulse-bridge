@@ -63,7 +63,10 @@ from .const import (
     BATTERY_LEVEL_ESTIMATED
 )
 from .entity import CustomFriendlyNameEntity
-from .bridge_client import PulseBridgeClient, BridgeAuthError, BridgeNotFoundError, gen_log_list
+from .bridge_client import PulseBridgeClient, BridgeAuthError, BridgeNotFoundError, BridgeReadError, gen_log_list
+
+# isolated read/decode failures keep the last values - only this many failures in a row mark the entities unavailable
+MAX_TOLERATED_READ_ERRORS: Final = 2
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -130,6 +133,8 @@ async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry):
     return unload_ok
 
 class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
+    _consecutive_read_errors: int = 0
+
 
     def __init__(self, hass: HomeAssistant, config_entry):
         if config_entry is None:
@@ -400,6 +405,7 @@ class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
             # F-36: the bridge FW might have been changed (OTA) - and the client has re-detected it
             self._use_classic = self.bridge.use_classic
             self.async_delete_endpoint_issue()
+            self._consecutive_read_errors = 0
 
             # we always return a DICT of the current data in the bridge objects...
             return {
@@ -415,6 +421,13 @@ class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
             # F-36: endpoints still missing after the FW re-detection
             self.async_create_endpoint_issue()
             raise UpdateFailed(str(exception)) from exception
+        except BridgeReadError as exception:
+            self._consecutive_read_errors += 1
+            if self.data is not None and self._consecutive_read_errors <= MAX_TOLERATED_READ_ERRORS:
+                _LOGGER.debug(f"_async_update_data(): read failed ({self._consecutive_read_errors} in a row) - keeping last values: {exception}")
+                return self.data
+            _LOGGER.warning(f"_async_update_data(): UpdateFailed after {self._consecutive_read_errors} failed reads in a row: {exception}")
+            raise UpdateFailed() from exception
         except UpdateFailed as exception:
             _LOGGER.warning(f"_async_update_data(): UpdateFailed: {type(exception).__name__} - {exception}")
             raise UpdateFailed() from exception
