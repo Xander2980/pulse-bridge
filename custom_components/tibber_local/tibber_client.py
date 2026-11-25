@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -37,6 +38,39 @@ _LOGGER = logging.getLogger(__name__)
 MIN_RETRY_DELAY: Final = 2.5#0.2
 MAX_RETRY_DELAY: Final = 10 #1.2
 
+# F-07: the complete polling read (incl. retries) must not take longer than this
+READ_TIME_BUDGET: Final = 25.0
+# F-03: max time for TCP connect + handshake of the self-implemented websocket
+WS_CONNECT_TIMEOUT: Final = 10.0
+# F-04: max size of a single websocket frame / of a fragmented message (SML telegrams are < 1 KiB)
+WS_MAX_FRAME: Final = 64 * 1024
+# F-28: max size of a HTTP response body we are willing to read from the bridge
+MAX_RESPONSE_BYTES: Final = 1024 * 1024
+# F-14: energy totals (Wh) - how many consistent readings are required, till a 'jump' is accepted
+ENERGY_JUMP_CONFIRMATIONS: Final = 3
+# F-14: max plausible change of an energy total between two readings (Wh) [= 1 MWh]
+ENERGY_MAX_JUMP_WH: Final = 1_000_000
+# F-14: OBIS codes of energy totals (a-b:1.8.x / 2.8.x)
+ENERGY_TOTAL_OBIS_PREFIXES: Final = ("01000108", "01000208")
+
+
+class BridgeAuthError(Exception):
+    """F-09: the bridge rejected our credentials (HTTP 401/403)."""
+
+
+class BridgeNotFoundError(Exception):
+    """F-36: the bridge returned 404 for a data/metrics URL (firmware change?)."""
+
+
+async def read_limited(response, limit: int = MAX_RESPONSE_BYTES) -> bytes:
+    """F-28: read a response body, but never more than 'limit' bytes."""
+    if response.content_length is not None and response.content_length > limit:
+        raise ValueError(f"response too large: {response.content_length} bytes")
+    data = await response.content.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"response too large: > {limit} bytes")
+    return data
+
 # 'UNITS' maps the sml unit-code to its name - here we need the opposite direction [some names are used by
 # multiple codes - like 'm³' - so we build it reversed: the first (lowest) code wins, as it did before]
 UNIT_CODE_BY_NAME: Final = {a_name: a_code for a_code, a_name in reversed(UNITS.items())}
@@ -46,7 +80,7 @@ def gen_log_list(obis_values:dict)-> list:
     try:
         for a_obis in obis_values.values():
             a_list.append(format_entry_short(a_obis))
-    except BaseException:
+    except Exception:
         pass
     return a_list
 
@@ -85,6 +119,31 @@ class TibberLocalBridge:
     # '*f' part is kept in its own group, so the missing '.e' is inserted at the right position
     TWO_DIGIT_CODE_PATTERN: re.Pattern = re.compile(r'^([^.]*\.[^.]*?)(\*[^.(]*)?(\(.*$)')
 
+    @staticmethod
+    def parse_plaintext_value(value_str: str):
+        """F-15: split '000123.456*kWh' into (numeric value, unit-code) - kilo units are converted to the base unit.
+
+        Returns (value, unit) - value can be a str (when it's not numeric) and unit can be None."""
+        raw_value, has_unit, unit_str = value_str.partition("*")
+        raw_value = raw_value.strip()
+        unit_str = unit_str.strip()
+        if not has_unit:
+            return raw_value, None
+
+        if '.' in raw_value:
+            value = float(raw_value)
+        else:
+            value = int(raw_value)
+
+        # converting any "kilo" unit to base unit...
+        # so kWh will be converted to Wh - or kV will be V
+        if unit_str[:1].lower() == 'k':
+            value = value * 1000
+            unit_str = unit_str[1:]
+
+        return value, find_unit_int_from_string(unit_str)
+
+    @staticmethod
     def obis_hex_from_parts(obis_src: list, do_log_output: bool) -> str | None:
         """Convert the regex parts 'a-b:c.d.e*f' into the 12 char hex OBIS code smllib expects."""
         try:
@@ -110,6 +169,7 @@ class TibberLocalBridge:
                 _LOGGER.warning(f"could not parse a value as int from list {obis_src} - ... - Exception: {e}")
             return None
 
+    @staticmethod
     def check_first_six_parts_for_digits_or_last_is_none(parts: list[str]) -> bool:
         return (TibberLocalBridge.ONLY_DIGITS.match(parts[1]) is not None and
                 TibberLocalBridge.ONLY_DIGITS.match(parts[2]) is not None and
@@ -118,6 +178,7 @@ class TibberLocalBridge:
                 TibberLocalBridge.ONLY_DIGITS.match(parts[5]) is not None and
                 (parts[6] is None or TibberLocalBridge.ONLY_DIGITS.match(parts[6]) is not None))
 
+    @staticmethod
     def _ws_parse_header_string(payload_head):
         # Parse device and topic
         device = None
@@ -131,15 +192,18 @@ class TibberLocalBridge:
                 elif a_part.startswith('topic:'):
                     topic = a_part.split(':', 1)[1]
 
-            topic = topic.strip('"')
-            device = device.lower()
-            #_LOGGER.debug(f"ws_parse_header(): device: {device}, topic: {topic}")
+            # F-13: a header without 'topic:' or 'device:' must not raise an AttributeError
+            if topic is not None:
+                topic = topic.strip('"')
+            if device is not None:
+                device = device.strip('"').lower()
 
         except (UnicodeDecodeError, ValueError) as e:
             _LOGGER.info(f"ws_parse_header_string(): Failed to parse string header: {e}")
 
         return (topic, device)
 
+    @staticmethod
     def _ws_parse_header_bytes(sml_head: bytes):
         try:
             return TibberLocalBridge._ws_parse_header_string(sml_head.decode('ascii', errors='ignore'))
@@ -151,6 +215,8 @@ class TibberLocalBridge:
     # 'all' other modes have to be implemented... also it could be that the bridge does
     # not return a value for param_id=27
     def __init__(self, host, pwd, websession, node_num: int = 1, com_mode: int = MODE_3_SML_1_04, options: dict = None, coordinator: DataUpdateCoordinator = None):
+        # F-35: the node number must always be an int (the config flow did store it as float: 'node_id=3.0')
+        node_num = int(node_num)
         self._use_classic = True
 
         if websession is not None:
@@ -208,6 +274,9 @@ class TibberLocalBridge:
         self.ws_writer = None
         self._ws_LAST_UPDATE = 0
         self._ws_debounced_update_task: asyncio.Task | None = None
+        self._ws_meta_update_task: asyncio.Task | None = None
+        self._registry_timer_unsub = None
+        self._terminating = False
         self._ws_LAST_NEW_DATA_NOTIFY = 0
 
         self._com_mode = com_mode
@@ -222,6 +291,13 @@ class TibberLocalBridge:
         self._nodes_data = {}
         self._obis_values = {}
         #self._obis_values_by_short = {}
+
+        # F-07: deadline of the current polling cycle (None = no limit)
+        self._read_deadline: float | None = None
+        # F-36: time of the last FW re-detection (after a 404)
+        self._LAST_FW_REDETECT: float | None = None
+        # F-14: pending (implausible) energy values: obis -> (value, count)
+        self._energy_pending: dict = {}
 
         self._fallback_usage_counter = 0
         self._use_fallback_by_default = False
@@ -250,7 +326,7 @@ class TibberLocalBridge:
                         while len(resp_str) > 1 and resp_str[-1] != '}':
                             resp_str = resp_str[:-1]
                         self._test_data = json.loads(resp_str)
-                    except BaseException as exc:
+                    except Exception as exc:
                         _LOGGER.debug(f"_check_api_endpoint(): could not read test data {type(exc).__name__}: {exc}")
                     return True
                 else:
@@ -270,7 +346,7 @@ class TibberLocalBridge:
                     # the first fw we are aware of that use the new URLs is 1794-03b6cbaf
                     if int(fw_version_str.split("-")[0]) > 1793:
                         use_new_fw_code = True
-                except BaseException as exc:
+                except Exception as exc:
                     _LOGGER.debug(f"_check_and_apply_fw_version() could not extract fw number from '{fw_version_str}' - {type(exc).__name__}: {exc}")
 
         if use_new_fw_code:
@@ -289,6 +365,9 @@ class TibberLocalBridge:
         self.node_eui_list = []
         try:
             async with self.web_session.get(self.url_metadata, headers=self.REQ_HEADERS_BASIC_AUTH, ssl=False, timeout=10.0) as res:
+                # F-09: a wrong password must be reported to HA (reauth) - not just logged
+                if res.status in (401, 403):
+                    raise BridgeAuthError(f"bridge rejected the credentials (HTTP {res.status}) - please check the password")
                 try:
                     res.raise_for_status()
                     if res.status == 200:
@@ -299,7 +378,7 @@ class TibberLocalBridge:
                                 _LOGGER.warning(f"get_eui_for_node(): bridge does not provide a 'eui' from: {a_node_obj}")
                                 continue
 
-                            a_eui = a_eui.lower()
+                            a_eui = str(a_eui).lower()
                             self.node_eui_list.append(a_eui)
 
                             # have we already set our internal device id?
@@ -319,6 +398,8 @@ class TibberLocalBridge:
                         _LOGGER.warning(f"get_eui_for_node(): access to bridge failed with INNER exception: {type(exc).__name__} - {exc} - are you sure that you have provided the correct password for your bridge?", stack_info=True)
                     else:
                         _LOGGER.warning(f"get_eui_for_node(): access to bridge failed with INNER exception: {type(exc).__name__} - {exc}", stack_info=True)
+        except BridgeAuthError:
+            raise
         except Exception as exc:
             _LOGGER.warning(f"get_eui_for_node(): access to bridge failed with OUTER exception: {type(exc).__name__} - {exc}", stack_info=True)
 
@@ -393,45 +474,140 @@ class TibberLocalBridge:
             _LOGGER.warning(f"detect_com_mode_from_node_param27(): access to bridge failed with OUTER exception: {type(exc).__name__} - {exc}", stack_info=True)
 
     async def update(self):
-        await self.read_tibber_local(mode=self._com_mode, retry_count=0)
+        # F-07: the complete polling read (incl. all retries) has a limited time budget
+        self._read_deadline = time.monotonic() + READ_TIME_BUDGET
+        try:
+            await self.read_tibber_local(mode=self._com_mode, retry_count=0)
+        finally:
+            self._read_deadline = None
         await self.updated_tibber_nodes_if_needed()
         await self.updated_tibber_nodes_metrics_if_needed()
 
     async def update_and_log(self):
         await self.read_tibber_local(mode=self._com_mode, retry_count=0, log_payload=True)
 
-    async def read_tibber_local(self, mode: int, retry_count: int, log_payload: bool = False):
+    async def _redetect_fw_after_404(self, failed_url: str) -> bool:
+        """F-36: the bridge returned 404 for one of our URLs - maybe the bridge FW has been updated (OTA)
+        while HA was running. Re-run the FW detection (max every 5 minutes) and return True, if the
+        URL set has been changed."""
+        now = time.monotonic()
+        if self._LAST_FW_REDETECT is not None and now - self._LAST_FW_REDETECT < 300:
+            return False
+        self._LAST_FW_REDETECT = now
+
+        old_use_classic = self._use_classic
+        old_url_data = self.url_data
+        await self.check_and_apply_fw_version()
+        changed = old_use_classic != self._use_classic or old_url_data != self.url_data
+        if changed:
+            _LOGGER.info(f"_redetect_fw_after_404(): bridge returned 404 for {failed_url} - FW change detected, now using: {self.url_data}")
+        else:
+            _LOGGER.warning(f"_redetect_fw_after_404(): bridge returned 404 for {failed_url} - FW re-detection did not change the URLs")
+        return changed
+
+    async def read_tibber_local(self, mode: int, retry_count: int, log_payload: bool = False, fw_redetected: bool = False):
         if self.url_data is None:
             await self.check_and_apply_fw_version()
         _LOGGER.debug(f"read_tibber_local(): start[{retry_count}] - mode: {mode} request: {self.url_data}")
         # on init we wait up to 60 seconds till we get a reply from the bridge (when HA is starting, plenty of
         # requests are running...
+        retry_after_fw_change = False
         async with self.web_session.get(self.url_data, headers=self.REQ_HEADERS_BASIC_AUTH, ssl=False, timeout=60.0 if len(self._obis_values) == 0 else 10.0) as res:
-            try:
-                res.raise_for_status()
-                if res.status == 200:
+            # F-09: wrong password must not end up in an endless 'UpdateFailed' loop
+            if res.status in (401, 403):
+                raise BridgeAuthError(f"bridge rejected the credentials (HTTP {res.status}) - please check the password")
+
+            # F-36: 404 -> FW of the bridge might have been changed
+            if res.status == 404:
+                if not fw_redetected and await self._redetect_fw_after_404(self.url_data):
+                    retry_after_fw_change = True
+                else:
+                    raise BridgeNotFoundError(f"bridge returned 404 for {self.url_data}")
+
+            elif res.status != 200:
+                _LOGGER.warning(f"access to bridge failed with code {res.status} - res: {res}")
+
+            else:
+                try:
+                    # F-28: never read more than MAX_RESPONSE_BYTES
+                    payload = await read_limited(res)
                     if mode == MODE_3_SML_1_04:
-                        await self.mode_03_read_sml(await res.read(), retry_count, log_payload)
+                        await self.mode_03_read_sml(payload, retry_count, log_payload)
 
                     elif mode == MODE_10_ImpressionsAmbient:
-                        await self.mode_10_read_json_impressions_ambient(await res.json(), retry_count, log_payload)
+                        await self.mode_10_read_json_impressions_ambient(json.loads(payload), retry_count, log_payload)
 
                     elif mode == MODE_99_PLAINTEXT:
-                        plaintext_payload = await res.text(errors="ignore")
+                        plaintext_payload = payload.decode("utf-8", errors="ignore")
                         await self.mode_99_read_plaintext(plaintext_payload, retry_count, log_payload)
 
                     if _LOGGER.isEnabledFor(logging.DEBUG):
                         _LOGGER.debug(f"read_tibber_local: after[{retry_count}] read - found OBIS entries: '{gen_log_list(self._obis_values)}'")
-                else:
-                    if res is not None:
-                        _LOGGER.warning(f"access to bridge failed with code {res.status} - res: {res}")
+
+                # F-08: no 'BaseException' - CancelledError must not be swallowed
+                except (BridgeAuthError, BridgeNotFoundError):
+                    raise
+                except Exception as exc:
+                    _LOGGER.warning(f"access to bridge failed with exception: {type(exc).__name__} - {exc}")
+
+        if retry_after_fw_change:
+            await self.read_tibber_local(mode=mode, retry_count=retry_count, log_payload=log_payload, fw_redetected=True)
+
+    def _set_obis_values(self, new_values: dict):
+        """Replace the current obis values - energy totals are checked for plausibility (F-14)."""
+        for obis in list(new_values.keys()):
+            if str(obis).lower().startswith(ENERGY_TOTAL_OBIS_PREFIXES):
+                if not self._energy_value_plausible(obis, new_values[obis]):
+                    old_entry = self._obis_values.get(obis)
+                    if old_entry is not None:
+                        new_values[obis] = old_entry
                     else:
-                        _LOGGER.warning(f"access to bridge failed (UNKNOWN reason - 'res' is None)")
+                        del new_values[obis]
+        self._obis_values = new_values
 
-            except BaseException as exc:
-                _LOGGER.warning(f"access to bridge failed with exception: {type(exc).__name__} - {exc}")
+    @staticmethod
+    def _entry_value(entry):
+        try:
+            return float(entry.get_value())
+        except Exception:
+            return float(entry.value)
 
-    async def mode_99_read_plaintext(self, plaintext: str, retry_count: int, log_payload: bool):
+    def _energy_value_plausible(self, obis, entry) -> bool:
+        """F-14: an energy total (Wh) must not decrease and must not jump by more than ENERGY_MAX_JUMP_WH.
+        A 'new level' (e.g. meter replaced) will be accepted after ENERGY_JUMP_CONFIRMATIONS consistent readings."""
+        try:
+            new_value = self._entry_value(entry)
+        except Exception:
+            return False
+
+        old_entry = self._obis_values.get(obis)
+        if old_entry is None:
+            return True
+        try:
+            old_value = self._entry_value(old_entry)
+        except Exception:
+            return True
+
+        if 0 <= new_value - old_value <= ENERGY_MAX_JUMP_WH:
+            self._energy_pending.pop(obis, None)
+            return True
+
+        pending = self._energy_pending.get(obis)
+        if pending is not None and 0 <= new_value - pending[0] <= ENERGY_MAX_JUMP_WH:
+            count = pending[1] + 1
+        else:
+            count = 1
+
+        if count >= ENERGY_JUMP_CONFIRMATIONS:
+            _LOGGER.info(f"_energy_value_plausible(): accepting new level for {obis}: {old_value} -> {new_value}")
+            self._energy_pending.pop(obis, None)
+            return True
+
+        self._energy_pending[obis] = (new_value, count)
+        _LOGGER.debug(f"_energy_value_plausible(): ignoring implausible value for {obis}: {old_value} -> {new_value} [{count}/{ENERGY_JUMP_CONFIRMATIONS}]")
+        return False
+
+    async def mode_99_read_plaintext(self, plaintext: str, retry_count: int, log_payload: bool) -> bool:
         try:
             temp_obis_values = []
             if log_payload:
@@ -468,22 +644,8 @@ class TibberLocalBridge:
                                     _LOGGER.debug(f"mode_99_read_plaintext(): ignore invalid code: {a_line}")
                                 continue
 
-                            value = parts[7]
-                            unit = None
-                            if '*' in value:
-                                val_with_unit = value.split("*")
-                                if '.' in val_with_unit[0]:
-                                    value = float(val_with_unit[0])
-                                else:
-                                    value = int(val_with_unit[0])
-
-                                # converting any "kilo" unit to base unit...
-                                # so kWh will be converted to Wh - or kV will be V
-                                if val_with_unit[1].lower()[0] == 'k':
-                                    value = value * 1000
-                                    val_with_unit[1] = val_with_unit[1][1:]
-
-                                unit = find_unit_int_from_string(val_with_unit[1])
+                            # F-15: robust split of value & unit (empty unit, multiple '*')
+                            value, unit = TibberLocalBridge.parse_plaintext_value(parts[7])
 
                             # creating finally the "right" object from the parsed information
                             entry = SmlListEntry()
@@ -502,27 +664,29 @@ class TibberLocalBridge:
                         elif len(parts[0]) > 0 and parts[0][0] != '/':
                             if not self.ignore_parse_errors:
                                 _LOGGER.debug(f"mode_99_read_plaintext(): unknown entry: {parts[0]} (line: '{a_line}')")
-                        # else:
-                        #    print('ignore '+ parts[0])
 
                 except Exception as e:
                     if not self.ignore_parse_errors:
                         _LOGGER.info(f"mode_99_read_plaintext(): {type(e).__name__} - {e}")
 
             if len(temp_obis_values) > 0:
-                self._obis_values = {}
-                #self._obis_values_by_short = {}
+                new_values = {}
                 for entry in temp_obis_values:
-                    self._obis_values[entry.obis] = entry
-                    #self._obis_values_by_short[entry.obis.obis_short] = entry
+                    new_values[entry.obis] = entry
+                self._set_obis_values(new_values)
+                return True
+            return False
 
         except Exception as exc:
             if not self.ignore_parse_errors:
-                _LOGGER.warning(f"Exception {exc} while process data - plaintext: {plaintext}")
+                # F-27: the payload is only logged on DEBUG level
+                _LOGGER.warning(f"mode_99_read_plaintext(): Exception {type(exc).__name__} - {exc} while process data")
+                _LOGGER.debug(f"mode_99_read_plaintext(): plaintext: {plaintext}")
             # check if we should retry...
             await self._check_for_retry_read(mode=MODE_99_PLAINTEXT, retry_count=retry_count)
+            return False
 
-    async def mode_10_read_json_impressions_ambient(self, data: dict, retry_count: int, log_payload: bool):
+    async def mode_10_read_json_impressions_ambient(self, data: dict, retry_count: int, log_payload: bool) -> bool:
         # {"$type": "imp_data", "timestamp_ms": 2122625,"delta_ms": 9879,"kw":0.364409, "kwh": 0.0040}
         temp_obis_values = {}
 
@@ -538,7 +702,8 @@ class TibberLocalBridge:
                 entry.obis = ObisCode('0100100700ff')
                 entry.unit = 27 # 27 is the unit: Watt
                 entry.scaler = 0
-                entry.value = kw * 1000
+                # F-16: avoid float artefacts like 364.40900000000005
+                entry.value = round(float(kw) * 1000, 6)
                 temp_obis_values[entry.obis] = entry
 
             kwh = data.get("kwh")
@@ -547,15 +712,17 @@ class TibberLocalBridge:
                 entry.obis = ObisCode('0100010800ff')
                 entry.unit = 30 # 30 is the unit: Wh
                 entry.scaler = 0
-                entry.value = kwh * 1000
+                entry.value = round(float(kwh) * 1000, 6)
                 temp_obis_values[entry.obis] = entry
         else:
             _LOGGER.debug(f"mode_10_read_json_impressions_ambient(): unexpected payload: {data}")
 
         if len(temp_obis_values) > 0:
-            self._obis_values = temp_obis_values
+            self._set_obis_values(temp_obis_values)
+            return True
+        return False
 
-    async def mode_03_read_sml(self, payload: bytes, retry_count: int, log_payload: bool):
+    async def mode_03_read_sml(self, payload: bytes, retry_count: int, log_payload: bool) -> bool:
         # for whatever reason, the data that can be read from the TibberPulse Webserver is
         # not always valid! [I guess there is an issue with an internal buffer in the webserver
         # implementation] - in any case, the bytes received contain sometimes invalid characters,
@@ -569,9 +736,11 @@ class TibberLocalBridge:
             sml_frame = stream.get_frame()
             if sml_frame is None:
                 if not self.ignore_parse_errors:
-                    _LOGGER.info(f"Bytes missing - payload: {payload}")
+                    # F-27: payload only on DEBUG level
+                    _LOGGER.debug(f"mode_03_read_sml(): Bytes missing - payload: {payload}")
                 # check if we should retry...
                 await self._check_for_retry_read(mode=MODE_3_SML_1_04, retry_count=retry_count)
+                return False
             else:
                 use_fallback_impl = self._use_fallback_by_default
                 sml_list = None
@@ -607,26 +776,39 @@ class TibberLocalBridge:
 
                 # if we have a list of SML entries, we can process them
                 if sml_list is not None and len(sml_list) > 0:
-                    self._obis_values = {}
+                    new_values = {}
                     for entry in sml_list:
-                        self._obis_values[entry.obis] = entry
-                        #self._obis_values_by_short[entry.obis.obis_short] = entry
+                        new_values[entry.obis] = entry
+                    self._set_obis_values(new_values)
+                    return True
+                return False
 
-        except (CrcError, BaseException) as exc:
+        # F-08: no 'BaseException' - CancelledError must not be swallowed
+        except Exception as exc:
             if not self.ignore_parse_errors:
+                # F-27: the payload is only logged on DEBUG level
                 if isinstance(exc, CrcError):
-                    _LOGGER.info(f"CRC while parse data - payload: {payload}")
+                    _LOGGER.info("mode_03_read_sml(): CRC error while parse data")
                 else:
-                    _LOGGER.warning(f"Exception {type(exc).__name__} - {exc} while parse data - payload: {payload}")
+                    _LOGGER.warning(f"mode_03_read_sml(): Exception {type(exc).__name__} - {exc} while parse data")
+                _LOGGER.debug(f"mode_03_read_sml(): payload: {payload}")
 
             # check, if we should retry...
             await self._check_for_retry_read(mode=MODE_3_SML_1_04, retry_count=retry_count)
+            return False
 
     async def _check_for_retry_read(self, mode: int, retry_count: int):
-        if retry_count < self.MAX_READ_RETRIES:
-            new_retry_count = retry_count + 1
-            await asyncio.sleep(random.uniform(MIN_RETRY_DELAY, MAX_RETRY_DELAY))
-            await self.read_tibber_local(mode=mode, retry_count=new_retry_count)
+        if retry_count >= self.MAX_READ_RETRIES:
+            return
+
+        delay = random.uniform(MIN_RETRY_DELAY, MAX_RETRY_DELAY)
+        # F-07: do not exceed the time budget of the current polling cycle (a read can take up to 10 sec)
+        if self._read_deadline is not None and time.monotonic() + delay + 10.0 > self._read_deadline:
+            _LOGGER.debug(f"_check_for_retry_read(): skip retry {retry_count + 1} - time budget of this update cycle exhausted")
+            return
+
+        await asyncio.sleep(delay)
+        await self.read_tibber_local(mode=mode, retry_count=retry_count + 1)
 
     async def updated_tibber_nodes_metrics_if_needed(self, log_payload: bool = False):
         if self._node_metrics_update_is_running:
@@ -635,24 +817,29 @@ class TibberLocalBridge:
         # only request every 30 minutes (= 30 * 60sec) for new meta_data...
         to_wait_till = self._LAST_NODE_METRICS_UPDATE + 1800
         if to_wait_till > time.time():
-            #_LOGGER.debug(f"updated_tibber_metrics_if_needed(): no update required [wait for: {round((to_wait_till - time.time())/60, 1)} min]")
             return
 
         self._node_metrics_update_is_running = True
         try:
             if self.url_metrics is None:
                 await self.check_and_apply_fw_version()
-            _LOGGER.debug(f"updated_tibber_nodes_metrics_if_needed(): request: {self.url_metrics}")
-            async with self.web_session.get(self.url_metrics, headers=self.REQ_HEADERS_BASIC_AUTH, ssl=False, timeout=10.0) as res:
-                res.raise_for_status()
-                try:
-                    self._metrics_data = await res.json()
-                    if log_payload:
-                        _LOGGER.debug(f"updated_tibber_nodes_metrics_if_needed(): metrics response: {self._metrics_data}")
-                except BaseException as exc:
-                    _LOGGER.warning(f"updated_tibber_nodes_metrics_if_needed(): failed to parse metrics JSON: {type(exc).__name__} - {exc}")
 
-        except BaseException as exc:
+            for _attempt in range(2):
+                _LOGGER.debug(f"updated_tibber_nodes_metrics_if_needed(): request: {self.url_metrics}")
+                async with self.web_session.get(self.url_metrics, headers=self.REQ_HEADERS_BASIC_AUTH, ssl=False, timeout=10.0) as res:
+                    # F-36: 404 -> FW of the bridge might have been changed -> try again with the new URL
+                    if res.status == 404 and _attempt == 0 and await self._redetect_fw_after_404(self.url_metrics):
+                        continue
+                    res.raise_for_status()
+                    try:
+                        self._metrics_data = json.loads(await read_limited(res))
+                        if log_payload:
+                            _LOGGER.debug(f"updated_tibber_nodes_metrics_if_needed(): metrics response: {self._metrics_data}")
+                    except Exception as exc:
+                        _LOGGER.warning(f"updated_tibber_nodes_metrics_if_needed(): failed to parse metrics JSON: {type(exc).__name__} - {exc}")
+                    break
+
+        except Exception as exc:
             _LOGGER.warning(f"updated_tibber_nodes_metrics_if_needed(): access to bridge failed with exception: {type(exc).__name__} - {exc}")
 
         finally:
@@ -668,7 +855,6 @@ class TibberLocalBridge:
         # only request every 2 minutes (= 2 * 60sec) for new meta_data...
         to_wait_till = self._LAST_NODES_UPDATE + 120
         if to_wait_till > time.time():
-            #_LOGGER.debug(f"updated_tibber_metrics_if_needed(): no update required [wait for: {round((to_wait_till - time.time())/60, 1)} min]")
             return
 
         self.nodes_update_is_running = True
@@ -677,19 +863,21 @@ class TibberLocalBridge:
             async with self.web_session.get(self.url_metadata, headers=self.REQ_HEADERS_BASIC_AUTH, ssl=False, timeout=10.0) as res:
                 res.raise_for_status()
                 try:
-                    json_resp = await res.json()
+                    json_resp = json.loads(await read_limited(res))
                     for a_node_obj in json_resp:
                         a_eui = a_node_obj.get("eui", None)
-                        if a_eui and self.node_device_id == a_eui:
+                        # F-10: the device id is stored in lower case
+                        if a_eui and self.node_device_id == str(a_eui).lower():
                             self._nodes_data = a_node_obj
                             break
 
                     if log_payload:
-                        _LOGGER.debug(f"updated_tibber_nodes_if_needed(): metrics response: {self._nodemetrics_data}")
-                except BaseException as exc:
-                    _LOGGER.warning(f"updated_tibber_nodes_if_needed(): failed to parse metrics JSON: {type(exc).__name__} - {exc}")
+                        # F-11: was referencing the not existing '_nodemetrics_data'
+                        _LOGGER.debug(f"updated_tibber_nodes_if_needed(): nodes response: {self._nodes_data}")
+                except Exception as exc:
+                    _LOGGER.warning(f"updated_tibber_nodes_if_needed(): failed to parse nodes JSON: {type(exc).__name__} - {exc}")
 
-        except BaseException as exc:
+        except Exception as exc:
             _LOGGER.warning(f"updated_tibber_nodes_if_needed(): access to bridge failed with exception: {type(exc).__name__} - {exc}")
 
         finally:
@@ -758,6 +946,27 @@ class TibberLocalBridge:
             raw_payload=text_data,
         )
 
+    def _ws_mark_parsed(self, parsed: bool) -> bool:
+        # F-01/F-02: the websocket watchdog ('ws_check_last_update') must only be fed, when we
+        # have been able to parse real meter data - not with every (possibly broken) message
+        if parsed:
+            self._ws_LAST_UPDATE = time.time()
+        return bool(parsed)
+
+    def _ws_schedule_meta_update(self):
+        # F-06: the nodes/metrics requests must not block the websocket reader loop
+        if self._ws_meta_update_task is not None and not self._ws_meta_update_task.done():
+            return
+        self._ws_meta_update_task = asyncio.create_task(self._ws_meta_update())
+
+    async def _ws_meta_update(self):
+        try:
+            await self.updated_tibber_nodes_if_needed()
+            await self.updated_tibber_nodes_metrics_if_needed()
+        except Exception as exc:
+            _LOGGER.debug(f"_ws_meta_update(): {type(exc).__name__} - {exc}")
+        self._ws_notify_for_new_data()
+
     async def _ws_dispatch_payload(self, source_type: aiohttp.WSMsgType, topic: str | None, body: bytes | str, raw_payload: bytes | str) -> bool:
         if topic is None:
             _LOGGER.warning(f"_ws_dispatch_payload(): {source_type.name} topic '{topic}'/mode_'{self._com_mode}' in: {raw_payload}")
@@ -772,8 +981,7 @@ class TibberLocalBridge:
             binary_body = body
             _LOGGER.debug(f"_ws_dispatch_payload(): {source_type.name} body '{topic}' [len:{len(binary_body)}]: {binary_body if len(binary_body) <= 15 else binary_body[:15]}...")
             try:
-                await self.mode_03_read_sml(binary_body, retry_count=self.MAX_READ_RETRIES, log_payload=False)
-                return True
+                return self._ws_mark_parsed(await self.mode_03_read_sml(binary_body, retry_count=self.MAX_READ_RETRIES, log_payload=False))
             except Exception as e:
                 _LOGGER.warning(f"_ws_dispatch_payload(): {source_type.name} 'mode_03_read_sml' caused {type(e).__name__} [{binary_body}] {e}")
                 return False
@@ -784,8 +992,7 @@ class TibberLocalBridge:
             _LOGGER.debug(f"_ws_dispatch_payload(): {source_type.name} body (as TEXT) '{topic}' [len:{len(text_body)}]: {text_body if len(text_body) <= 15 else text_body[:15]}...")
 
             try:
-                await self.mode_99_read_plaintext(text_body, retry_count=self.MAX_READ_RETRIES, log_payload=False)
-                return True
+                return self._ws_mark_parsed(await self.mode_99_read_plaintext(text_body, retry_count=self.MAX_READ_RETRIES, log_payload=False))
             except Exception as e:
                 _LOGGER.warning(f"_ws_dispatch_payload(): {source_type.name} 'mode_99_read_plaintext' caused {type(e).__name__} [{text_body}] {e}")
                 return False
@@ -794,8 +1001,7 @@ class TibberLocalBridge:
             json_body = body.decode('ascii', errors='ignore') if isinstance(body, bytes) else body
             _LOGGER.debug(f"_ws_dispatch_payload(): {source_type.name} body (as JSON) '{topic}' [len:{len(json_body)}]: {json_body if len(json_body) <= 15 else json_body[:15]}...")
             try:
-                await self.mode_10_read_json_impressions_ambient(json.loads(json_body), retry_count=self.MAX_READ_RETRIES, log_payload=False)
-                return True
+                return self._ws_mark_parsed(await self.mode_10_read_json_impressions_ambient(json.loads(json_body), retry_count=self.MAX_READ_RETRIES, log_payload=False))
             except Exception as e:
                 _LOGGER.warning(f"_ws_dispatch_payload(): {source_type.name} 'mode_10_read_json_impressions_ambient' caused {type(e).__name__} [{json_body}] {e}")
                 return False
@@ -825,6 +1031,7 @@ class TibberLocalBridge:
 
     async def ws_check_implementation(self):
         could_read_message_with_aiohttp = False
+        ws = None
         try:
             async with self.web_session.ws_connect(self.url_ws, headers=self.REQ_HEADERS_BASIC_AUTH, compress=0) as ws:
                 _LOGGER.info(f"ws_check_implementation(): test aiohttp websocket with: {self.url_ws} (waiting max of 10 sec)")
@@ -835,15 +1042,16 @@ class TibberLocalBridge:
                     _LOGGER.debug(f"ws_check_implementation(): received: {msg} - all COOL - use real WebSocket implementation")
                     could_read_message_with_aiohttp = True
 
-        except asyncio.TimeoutError as timeout:
+        except asyncio.TimeoutError:
             _LOGGER.info(f"ws_check_implementation(): Timeout! No message from ws via aiohttp in 10 sec :-/")
-        except BaseException as x:
+        except Exception as x:
             _LOGGER.error(f"ws_check_implementation(): Exception {type(x).__name__} - {x}")
 
         finally:
             try:
-                await self.ws_close(ws)
-            except BaseException:
+                if ws is not None:
+                    await self.ws_close(ws)
+            except Exception:
                 #ignore any closing errors of our test...
                 pass
 
@@ -851,13 +1059,14 @@ class TibberLocalBridge:
         return could_read_message_with_aiohttp
 
     async def ws_connect_classic(self):
+        ws = None
+        was_cancelled = False
         try:
             async with self.web_session.ws_connect(self.url_ws, headers=self.REQ_HEADERS_BASIC_AUTH, compress=0) as ws:
                 self.ws_connected = True
                 self.ws_obj = ws
                 _LOGGER.info(f"ws_connect_classic(): connected to websocket: {self.url_ws} - in COM MODE: {self._com_mode}")
                 async for msg in ws:
-                    self._ws_LAST_UPDATE = time.time()
                     new_data_arrived = False
 
                     # self._com_mode == MODE_3_SML_1_04
@@ -882,9 +1091,7 @@ class TibberLocalBridge:
 
                     # do we need to push new data event to the coordinator?
                     if new_data_arrived:
-                        await self.updated_tibber_nodes_if_needed()
-                        await self.updated_tibber_nodes_metrics_if_needed()
-                        self._ws_notify_for_new_data()
+                        self._ws_schedule_meta_update()
 
         except ClientResponseError as cre:
             if hasattr(cre, "status") and cre.status == 404:
@@ -898,25 +1105,32 @@ class TibberLocalBridge:
             _LOGGER.debug(f"ws_connect_classic(): TimeoutError: No WebSocket message received within timeout period: {type(time_exc).__name__} - {time_exc}")
         except CancelledError as canceled:
             _LOGGER.debug(f"ws_connect_classic(): Terminated? - {type(canceled).__name__} - {canceled}")
-        except BaseException as x:
+            was_cancelled = True
+        except Exception as x:
             _LOGGER.error(f"ws_connect_classic(): !!! {type(x).__name__} - {x}")
 
         _LOGGER.debug(f"ws_connect_classic(): -- END HAS REACHED --")
-        try:
-            await self.ws_close(ws)
-        except UnboundLocalError as is_unbound:
-            _LOGGER.debug(f"ws_connect_classic(): skipping ws_close() (since ws is unbound)")
-        except BaseException as e:
-            _LOGGER.error(f"ws_connect_classic(): Error while calling ws_close(): {type(e).__name__} - {e}")
+        if ws is not None:
+            try:
+                await self.ws_close(ws)
+            except Exception as e:
+                _LOGGER.error(f"ws_connect_classic(): Error while calling ws_close(): {type(e).__name__} - {e}")
 
         self.ws_connected = False
         self.ws_obj = None
+        if was_cancelled:
+            # F-08: a cancellation must be propagated to the caller
+            raise CancelledError()
         return None
 
     async def ws_connect_2026_09(self):
         # We can't use a standard websocket lib here, since the Pulse sends always two bytes
         # b'\x02%' that can't be ready with aiohttp :-/
-        self.ws_reader, self.ws_writer = await asyncio.open_connection(self.url_ws_host, 80)
+        # F-03: the connect must not hang forever - and a configured port (host:port) must be respected
+        a_host, _, a_port = self.url_ws_host.partition(":")
+        self.ws_reader, self.ws_writer = await asyncio.wait_for(
+            asyncio.open_connection(a_host, int(a_port) if a_port.isdigit() else 80),
+            timeout=WS_CONNECT_TIMEOUT)
 
         request = (
             f"GET /ws HTTP/1.1\r\n"
@@ -964,6 +1178,10 @@ class TibberLocalBridge:
                     ext_bytes = await self.ws_reader.readexactly(bytes_to_read)
                     payload_len = int.from_bytes(ext_bytes, byteorder="big")
 
+                # F-04: never allocate unlimited memory because of a broken (or malicious) length field
+                if payload_len > WS_MAX_FRAME:
+                    raise ValueError(f"frame too large: {payload_len} bytes (max: {WS_MAX_FRAME})")
+
                 # Read masking key if present
                 mask_key = await self.ws_reader.readexactly(4) if is_masked else None
 
@@ -980,7 +1198,10 @@ class TibberLocalBridge:
                     _LOGGER.info("ws_connect_2026_09(): Server sent close frame.")
                     break
                 elif opcode == 0x9:  # Ping -> Respond with Pong (0xA)
-                    pong_frame = bytes([0x8A, len(payload)]) + payload
+                    # F-05: RFC 6455 - all frames from the client must be masked, control frame payload is max 125 bytes
+                    pong_payload = payload[:125]
+                    pong_mask = os.urandom(4)
+                    pong_frame = bytes([0x8A, 0x80 | len(pong_payload)]) + pong_mask + bytes(b ^ pong_mask[i % 4] for i, b in enumerate(pong_payload))
                     self.ws_writer.write(pong_frame)
                     await self.ws_writer.drain()
                     continue
@@ -988,6 +1209,8 @@ class TibberLocalBridge:
                     continue
 
                 message_buffer.extend(payload)
+                if len(message_buffer) > WS_MAX_FRAME:
+                    raise ValueError(f"fragmented message too large: {len(message_buffer)} bytes (max: {WS_MAX_FRAME})")
 
                 # If FIN bit is set, the full message has been received
                 if is_fin:
@@ -998,18 +1221,25 @@ class TibberLocalBridge:
             _LOGGER.info("ws_connect_2026_09(): WebSocket connection closed cleanly by remote host.")
         except asyncio.CancelledError:
             _LOGGER.debug("ws_connect_2026_09(): WebSocket reader task cancelled.")
+            raise
         except Exception as ex:
             _LOGGER.warning(f"ws_connect_2026_09(): Error parsing WebSocket stream: {type(ex).__name__}: {ex}")
         finally:
             self.ws_connected = False
-            if self.ws_writer:
-                self.ws_writer.close()
-                await self.ws_writer.wait_closed()
-                self.ws_writer = None
-                self.ws_reader = None
+            await self._ws_close_stream()
+
+    async def _ws_close_stream(self):
+        writer = self.ws_writer
+        self.ws_writer = None
+        self.ws_reader = None
+        if writer is not None:
+            try:
+                writer.close()
+                await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
+            except Exception as exc:
+                _LOGGER.debug(f"_ws_close_stream(): {type(exc).__name__} - {exc}")
 
     async def handle_buffer(self, buffer):
-        self._ws_LAST_UPDATE = time.time()
         new_data_arrived = False
         try:
             new_data_arrived = await self._ws_handle_binary_message(buffer)
@@ -1017,9 +1247,7 @@ class TibberLocalBridge:
             _LOGGER.debug(f"ws_connect_2026_09(): Could not read {buffer} - caused {type(e).__name__} {e}")
 
         if new_data_arrived:
-            await self.updated_tibber_nodes_if_needed()
-            await self.updated_tibber_nodes_metrics_if_needed()
-            self._ws_notify_for_new_data()
+            self._ws_schedule_meta_update()
 
     def _ws_notify_for_new_data(self):
         if self._ws_debounced_update_task is not None and not self._ws_debounced_update_task.done():
@@ -1057,7 +1285,7 @@ class TibberLocalBridge:
             try:
                 await ws.close()
                 _LOGGER.debug(f"ws_close(): connection closed successfully")
-            except BaseException as e:
+            except Exception as e:
                 _LOGGER.info(f"ws_close(): Error closing WebSocket connection: {type(e).__name__} - {e}")
             finally:
                 ws = None
@@ -1066,11 +1294,27 @@ class TibberLocalBridge:
             _LOGGER.debug(f"ws_close(): No active WebSocket connection to close (ws is None)")
 
         # we want to trigger the "ws-connection-state" update...
-        if self._coordinator is not None:
-            async_call_later(self._coordinator.hass, 5, self._coordinator.call_later_update_device_registry)
+        if self._coordinator is not None and not self._terminating:
+            # F-12: keep the handle, so that the timer can be cancelled on unload
+            self._cancel_registry_timer()
+            self._registry_timer_unsub = async_call_later(self._coordinator.hass, 5, self._coordinator.call_later_update_device_registry)
+
+    def _cancel_registry_timer(self):
+        if self._registry_timer_unsub is not None:
+            try:
+                self._registry_timer_unsub()
+            except Exception:
+                pass
+            self._registry_timer_unsub = None
 
     async def ws_close_and_prepare_to_terminate(self):
+        self._terminating = True
+        self._cancel_registry_timer()
         try:
+            if self._ws_meta_update_task is not None and not self._ws_meta_update_task.done():
+                self._ws_meta_update_task.cancel()
+            self._ws_meta_update_task = None
+
             # a possibly scheduled coordinator update is not required any longer
             if self._ws_debounced_update_task is not None and not self._ws_debounced_update_task.done():
                 self._ws_debounced_update_task.cancel()
@@ -1089,13 +1333,12 @@ class TibberLocalBridge:
                 #self.websession.detach()
                 #_LOGGER.debug(f"ws_close_and_prepare_to_terminate(): websession is detached!")
 
-            if self.ws_reader is not None:
-                # TODO MUST IMPLEMENT SOMETHING ?!
-                pass
+            # F-12: the self implemented websocket (2026_09 FW) must be closed as well
+            if self.ws_writer is not None:
+                await self._ws_close_stream()
+                self.ws_connected = False
 
-        except UnboundLocalError as is_unbound:
-            _LOGGER.debug(f"ws_close_and_prepare_to_terminate(): skipping (since ws is unbound) {type(is_unbound).__name__} - {is_unbound}")
-        except BaseException as e:
+        except Exception as e:
             _LOGGER.error(f"ws_close_and_prepare_to_terminate(): Error: {type(e).__name__} - {e}")
 
     def ws_check_last_update(self) -> bool:
