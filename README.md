@@ -1,280 +1,84 @@
-# <sub><img src="https://raw.githubusercontent.com/marq24/ha-tibber-pulse-local/main/custom_components/tibber_local/brand/icon48.png" style="align:bottom;"></sub> Tibber Pulse IR LOCAL 
+# <sub><img src="custom_components/pulse_bridge/brand/icon48.png" alt="" style="align:bottom;"></sub> Pulse Bridge for Tibber
 
-If you like to access the data of your Tibber Pulse IR directly (instead of the detour through the cloud), then there is a simple approach to read the data directly from the Tibber Pulse Bridge. There are alternative solutions via an additional MQTT - but why should the data go through such a proxy if it can be read directly.
+Local Home Assistant integration for the **Tibber Pulse IR** and its **Pulse Bridge**. The integration reads the meter data (OBIS values) directly from the bridge in your LAN – via WebSocket push or HTTP polling – without the detour through the Tibber cloud or an additional MQTT proxy.
 
-This integration will work __only__ with the __IR__ Version of the Tibber Pulse. There are other versions: P1, HAN or KM (sold in countries like Sweden, Norway or the Netherlands) that __are not compatible__ with this integration. If you are not sure what Tibber Pulse version you have, just check if you have an additional 'Bridge' device – which is basically an additional thing that you have to plug into a power outlet (see the picture below).
+[![GitHub release][releasebadge]][release] [![Lint & Tests][testsbadge]][tests] [![Validate with hassfest][hassfestbadge]][hassfest] [![License][licensebadge]](LICENSE)
 
-For Tibber Pulse P1, HAN or KM you might like to check out, if the [ha-tibber-pulse-mqtt by mrhedstrom](https://github.com/mrhedstrom/ha-tibber-pulse-mqtt) will satisfy your needs.
+> [!IMPORTANT]
+> This is an **unofficial** community project. It is not affiliated with, endorsed by or supported by Tibber. "Tibber" and "Tibber Pulse" are names of Tibber AS and are used here only to describe the hardware this integration works with.
 
-__Please note__, _that this integration is not official and not supported by the tibber development team. I am not affiliated with tibber in any way._
+> [!NOTE]
+> Pulse Bridge for Tibber is an independent continuation of [marq24/ha-tibber-pulse-local](https://github.com/marq24/ha-tibber-pulse-local) (Apache License 2.0). See [NOTICE](NOTICE) for origin, copyright and the list of changes.
 
-[![hacs_badge][hacsbadge]][hacs] [![hainstall][hainstallbadge]][hainstall] [![github][ghsbadge]][ghs] [![Wero][werobadge]][wero] [![Revolut][revolutbadge]][revolut] [![ApplePay][applepaybadge]][applepay] [![BuyMeCoffee][buymecoffeebadge]][buymecoffee] [![wise][wisebadge]][wise] [![PayPal][paypalbadge]][paypal] 
+## Supported hardware
 
----
+- **Tibber Pulse IR** reading head **with Pulse Bridge** (the extra device that is plugged into a power outlet).
+- **Not supported:** Tibber Pulse P1, HAN or KM (used e.g. in Sweden, Norway or the Netherlands). These variants have no local bridge web server. For those you may want to look at [ha-tibber-pulse-mqtt](https://github.com/mrhedstrom/ha-tibber-pulse-mqtt).
 
-## Tibber Invitation link
+Supported meter communication modes of the bridge:
 
-###### Advertisement / Werbung
+- SML 1.04
+- Plaintext
+- IEC-62056.21
+- Logarex
+- Impressions (blinks / kWh) using the ambient sensor
 
-If you want to join Tibber (become a customer), you might want to use my personal invitation link. When you use this link, Tibber will grant you and me a bonus of 50,-€ for each of us. This bonus then can be used in the Tibber store (not for your power bill) - e.g. to buy a Tibber Bridge. I am fully aware that when you are here in this repository, the chances are very high that you are already a Tibber customer and already have a Tibber Pulse. If you are already a Tibber customer and have not used an invitation link yet, you can also enter one afterward in the Tibber App (up to 14 days). [[see official Tibber support article](https://support.tibber.com/en/articles/4601431-tibber-referral-bonus#h_ae8df266c0)]
+The bridge also offers *AutoScanMode* and *Impressions using IR sensors*. These are not decoded yet – if your meter uses one of them, please open a [protocol report](https://github.com/Xander2980/pulse-bridge/issues/new?template=3-unsupported-type.yaml).
 
-Please consider [using my personal Tibber invitation link to join Tibber today](https://invite.tibber.com/6o0kqvzf) or Enter the following code: 6o0kqvzf (six, oscar, zero, kilo, quebec, victor, zulu, foxtrot) afterward in the Tibber App - TIA!
+## Features
 
----
+- Local push via the bridge WebSocket (default) or cyclic HTTP polling (interval from 2 s).
+- Sensors for all common OBIS codes: import/export totals and tariffs (Wh and kWh), current power, power/voltage/current per phase, frequency and phase angles.
+- Status sensors of the reading head (battery voltage, temperature, RSSI/LQI, radio TX power, uptime, packet counters) and of the bridge link (last seen, last data, average RSSI, packet delivery rate, LQI, availability).
+- Re-authentication flow when the bridge password changes, reconfiguration of host/settings, repair issue if the bridge firmware no longer provides the data endpoints.
+- Automatic detection of the bridge firmware (old `/data.json` and new `/node_data.json` endpoints) including firmware switches at runtime.
+- Multiple Pulse reading heads on one bridge (one integration entry per node).
 
-## Know Issues
+## Coexistence with `tibber_local`
 
-- The Tibber Pulse IR Bridge supports different communication modes (when fetching data from electricity meter). Here I need your help! Obviously, I have only one electricity meter here at home. This meter is communicating via a protocol called SML 1.04.
+Pulse Bridge for Tibber uses its own domain **`pulse_bridge`**. An existing installation of the original integration (`tibber_local`) is **not touched**: no configuration is migrated, no entity is renamed and both integrations can be installed side by side. Entities of the new integration get their own entity IDs (prefix `pulsebridge` by default) and unique IDs, so there are no collisions.
 
-  Over the time with the help of the community, the following modes are currently supported:
+If you want to switch, add Pulse Bridge for Tibber, check the new entities and then remove the old integration yourself. Long-term statistics of the old entities are not transferred automatically – see [Troubleshooting & FAQ](docs/troubleshooting.md#can-i-keep-the-history-of-my-old-tibber_local-entities).
 
-   - SML 1.04
-   - Plaintext
-   - IEC-62056.21
-   - Logarex
-   - Impressions (Blinks / kwh) using ambient
+## Quick start
 
-  The Tibber Bridge additionally offers the modes: _AutoScanMode, IEC-62056.21, Logarex and Impressions (Blinks / kwh) using IR sensors_. To support these other modes, I would need sample data from you. If your Tibber Pulse IR using one of these communications protocols, please be so kind and create here an issue in github - TIA!
+1. **Prepare the bridge:** the web frontend of the bridge must be enabled permanently (`webserver_force_enable`). Follow the [preparation guide](docs/preparation.md) – including the final checks.
+2. **Install** via HACS (custom repository) or manually – see the [installation guide](docs/installation.md).
+   
+   [![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Xander2980&repository=pulse-bridge&category=integration)
+3. **Restart** Home Assistant.
+4. **Add the integration:**
 
-- Sometimes the Pulse deliver a data-package that does not contain valid data (looks like the build in webserver have a response buffer issue?). These invalid packages can't be read with the [python SML-Lib](https://github.com/spacemanspiff2007/SmlLib) and you will find then in the HA-log some `Bytes missing...` or `CRC while parse data...` messages. (when logging on INFO Level)
+   [![Open your Home Assistant instance and start setting up Pulse Bridge for Tibber.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=pulse_bridge)
 
-  If they happen the code will just try to load the data again for one time. Together with the message the actual payload (data that has been read from the Tibber Pulse Bridge) will also be logged. So you can verify that the data is indeed invalid.
+   All options are explained in the [configuration guide](docs/configuration.md).
 
-- During the setup the integration check/verify that there is at least one data field available that can be read. If the bridge does not provide any data (OBIS codes) then the setup will fail (with the message, that the connection could not be established). You might like to check if `http://admin:[BRIDGE_PASSWORD]@[YOUR_IP]/node_data.json?node_id=1` (old fw `http://admin:[BRIDGE_PASSWORD]@[YOUR_IP]/data.json?node_id=1`) will provide a data feed.
+## Documentation
 
-## Preparation: The web frontend of the Tibber Pulse Bridge must be enabled permanently
+| Document | Content |
+|---|---|
+| [Preparation](docs/preparation.md) | Enable the bridge web frontend, verify pairing and data rate |
+| [Installation](docs/installation.md) | HACS, manual installation, update, removal |
+| [Configuration & usage](docs/configuration.md) | Setup options, entities, multiple nodes, reconfigure/re-auth |
+| [Troubleshooting & FAQ](docs/troubleshooting.md) | Common problems, debug logging, frequently asked questions |
+| [Bridge without Tibber contract](docs/non-tibber-customer.md) | Operating the bridge with your own MQTT broker |
+| [Development](docs/development.md) | Project layout, tests, release process |
+| [Changelog](CHANGELOG.md) | Version history |
+| [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md) · [Security](SECURITY.md) | Project policies |
 
-To be able to use this integration, you **must enable the web frontend of your Tibber Pulse Bridge _permanently_**.
+## Acknowledgements
 
-To do so, you need to set one variable in the web frontend. But to get into the web frontend for the first time, you need to start the Tibber Pulse Bridge in AccessPoint mode.
+- [marq24](https://github.com/marq24) and the contributors of [ha-tibber-pulse-local](https://github.com/marq24/ha-tibber-pulse-local), on whose work this project is based.
+- [@spacemanspiff2007](https://github.com/spacemanspiff2007) for [SmlLib](https://github.com/spacemanspiff2007/SmlLib), which is used to decode the SML data.
 
-[The complete procedure (including additional things you might like to verify) is documented in the preparation guide.](./preparation.md) Please read and follow the instructions carefully.
+## License
 
-**After you have enabled the web frontend _permanently_** of your Tibber Pulse Bridge, you can continue with the setup.
+Apache License 2.0 – see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-## Setup / Installation
-
-### Step I: Install the integration
-
-#### Option 1: via HACS
-[![Open your Home Assistant instance and adding repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=marq24&repository=ha-tibber-pulse-local&category=integration)
-
-- Install [Home Assistant Community Store (HACS)](https://hacs.xyz/)
-- Add integration repository (search for "Tibber Pulse Local" in "Explore & Download Repositories")
-- Use the 3-dots at the right of the list entry (not at the top bar!) to download/install the custom integration – the latest release version is automatically selected. Only select a different version if you have specific reasons.
-- After you have pressed download and the process has completed, you must __Restart Home Assistant__ to install all dependencies
-- Setup the custom integration as described below (see _Step II: Adding or enabling the integration_)
-
-#### Option 2: manual steps
-
-- Copy all files from `custom_components/tibber_local/` to `custom_components/tibber_local/` inside your config Home Assistant directory.
-- Restart Home Assistant to install all dependencies
-
-### Step II: Adding or enabling the integration
-
-__You must have installed the integration (manually or via HACS before)!__
-
-#### Option 1: My Home Assistant (2021.3+)
-
-[![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=tibber_local)
-
-Just click the following Button to start the configuration automatically (for the rest see _Option 2: Manually steps by step_):
-
-#### Option 2: Manually steps by step
-
-Add custom integration using the web interface and follow instruction on screen.
-
-- Go to `Configuration -> Integrations` and add "Tibber Pulse Local" integration
-- Specify:
-   - Provide a display name for the device
-   - Provide the address (hostname or IP) of the Pulse Bridge
-   - Provide the password of the Pulse Bridge
-   - Provide the update interval (can be 2 Seconds)
-   - Provide area where the Tibber Pule Bridge is located
-
-__IMPORTANT to know__: During the setup of this integration, it will be checked if there is at least one OBIS-Code (data field) available from the bridge. If there is no field/data available that can be read, the setup process will fail (with the message that no connection is possible).
-
-## Using multiple Pulse with a single Bridge
-In general, it is possible to use this integration with multiple Pulse devices connected to a single Bridge.
-
-If you have multiple Pulse devices connected to the same bridge, you will need to set up separate instances of the integration for each of your Pulse devices. This can be done via the expert Option 'Node' number. Since multiple Pulse devices can share the same bridge IP address, but then each of the Pulse devices has a **separate node number** (id).
-
-However, **please note that the integration currently supports only one WebSocket connection for a Pulse device per bridge**. So when you configure multiple Pulse nodes (all running on the same bridge), you can have only for one Node the WebSocket connection enabled. All others must run in http-pull mode.
-
-More about [multiple Pulse devices can be found in the Issue #120](https://github.com/marq24/ha-tibber-pulse-local/issues/120).
-
-## Contributing
-
-Bug reports, technical findings and contributions are welcome.
-
-Before opening a feature request or pull request, please read my [contribution guidelines](CONTRIBUTING.md).
-
-### Want to report an issue?
-
-Please use the [GitHub Issues](https://github.com/marq24/ha-tibber-pulse-local/issues) for reporting any issues you encounter with this integration. Please be so kind before creating a new issue, check the closed ones if your problem has been already reported (& solved).
-
-__The Integration is now available for +2 years. And looking back, there are three simple things that solved 99.89% of all issues – it's either:__
-- _Option A_: Slightly rotate the pulse reading head anti-clockwise<br/>
-  or
-- _Option B_: Replace the pulse batteries
-  or
-- _Option C_: Make sure that you have configured the correct `Node Number (expert setting)` in the integration.
-
-
-In order to speed up the support process, you might like to already prepare and provide DEBUG log output. In the case of a technical issue - like not-supported--yet-communication-mode - I would need this DEBUG log output to be able to help/fix the issue. There is a short [tutorial/guide 'How to provide DEBUG log' here](https://github.com/marq24/ha-senec-v3/blob/main/docs/HA_DEBUG.md) - please take the time to quickly go through it.
-
-## Kudos
-
-- [@spacemanspiff2007](https://github.com/spacemanspiff2007) for providing a Python SML lib that makes reading the data from the Pulse IR almost effortless for a python noob like me
-- [@ProfDrYoMan](https://github.com/ProfDrYoMan) for providing the initial idea. I failed to setup the ESP32 stuff, so I took the approach writing this custom integration
-
-
-<!--
-## Additional entities to get status information about your Tibber Pulse IR itself
-
-Beside the data that the Tibber Pulse IR is reading from your electricity meter, the device is also provide additional information about its own status. Since the assumption is that you want to read this additional status information with a much lower update-interval (less frequent) the usage of a REST-Entity template a (IMHO) simple way to archive your goal.
-
-### REST-Template in your HA configuration.yaml
-
-requesting `http://admin:[BRIDGE_PASSWORD]@[YOUR_IP]/node_metrics.json?node_id=1` will return a json like this one here
-
-```json
-{
-  "$type": "node_status",
-  "node_status": {
-    "product_id": 49344,
-    "bootloader_version": 17563650,
-    "meter_mode": 3,
-    "node_battery_voltage": 3.127,
-    "node_temperature": 22.51,
-    "node_avg_rssi": -72.746,
-    "node_avg_lqi": 186.438,
-    "radio_tx_power": 190,
-    "node_uptime_ms": 167656940,
-    "meter_msg_count_sent": 75,
-    "meter_pkg_count_sent": 237,
-    "time_in_em0_ms": 8405,
-    "time_in_em1_ms": 30,
-    "time_in_em2_ms": 291717,
-    "acmp_rx_autolevel_300": 146,
-    "acmp_rx_autolevel_9600": 164
-  },
-  "hub_attachments": {
-    "meter_pkg_count_recv": 237,
-    "meter_reading_count_recv": 75,
-    "node_version": "1007-56bd9fb9"
-  }
-}
-```
-
-Check if you have already a `sensor` section in your `configuration.yaml` file - if there is none - create one on as top level entry like this (the line '  - platforms: ...' must (obviously) be replaced with the complete sections shown further below):
-
-```yaml
-sensor:
-  - platform: ...
-```
-
-Add in the `sensor` section of your `configuration.yaml` file the following content: sections with `[ CHANGE_ME:xxx ]` have to be modified to your requirements. E.g. assuming your assuming password is __55AA-CC21__, then you have to replace `[ CHANGE_ME:YOUR_PASSWORD ]` with just `55AA-CC21`
-
-```yaml
-  - platform: rest
-    name: [ CHANGE_ME:Tibber Prices ]
-    unique_id: [ CHANGE_ME:tibber_prices ]
-    resource: http://admin:[ CHANGE_ME:YOUR_PASSWORD ]@[ CHANGE_ME:YOUR_IP ]/metrics.json?node_id=1
-    method: GET
-    json_attributes_path: "node_status"
-    json_attributes:
-      - node_temperature
-      - node_avg_rssi
-      - radio_tx_power
-      - [ CHANGE_ME: add/remove as many of the node_status attributes you want to meassure/do not need ]
-    value_template: "{{ value_json.node_status.node_battery_voltage | float }}"
-    # the scan_interval will be specified in seconds...
-    # for update every 5min use 300 (60sec * 5min = 300sec)
-    # for update every 15min use 900 (60sec * 15min = 900sec)
-    # for update every 1h use 3600 (60sec * 60min = 3600sec)
-    # for update every 24h use 86400 (60sec * 60min * 24h = 86400sec)
-    scan_interval: 900
-    headers:
-      Content-Type: application/json
-      User-Agent: REST
-    unit_of_measurement: [ CHANGE_ME:A_UNIT_HERE ]
-```
-
-Here is a complete example assuming the password is __55AA-CC21__ the IP is __192.168.2.213__, and you want to capture the __node_battery_voltage__ as main entity information and all other children of the `node_status` as additional attributes of the entity that will be requested every 5 minutes:
-
-```yaml
-  - platform: rest
-    name: Tibber Pulse Metrics
-    unique_id: tibber_pulse_metrics
-    resource: http://admin:55AA-CC21@192.168.2.213/metrics.json?node_id=1
-    method: GET
-    json_attributes_path: "node_status"
-    json_attributes:
-      - node_temperature
-      - node_avg_rssi
-      - node_avg_lqi
-      - radio_tx_power
-      - node_uptime_ms
-      - meter_msg_count_sent
-      - meter_pkg_count_sent
-      - time_in_em0_ms
-      - time_in_em1_ms
-      - time_in_em2_ms
-      - acmp_rx_autolevel_300
-      - acmp_rx_autolevel_9600
-    value_template: "{{ value_json.node_status.node_battery_voltage | float }}"
-    scan_interval: 300
-    headers:
-      Content-Type: application/json
-      User-Agent: REST
-    unit_of_measurement: V
-```
-
-Here just another example with just a single value (without additional atributes) that will update every hour (just again have in mind, that this yaml section have to be under your `sensor` section of your `configuration.yaml` file):
-
-```yaml
-  - platform: rest
-    name: Tibber Pulse Metrics
-    unique_id: tibber_pulse_metrics
-    resource: http://admin:55AA-CC21@192.168.2.213/metrics.json?node_id=1
-    method: GET
-    value_template: "{{ value_json.node_status.node_battery_voltage | float }}"
-    scan_interval: 3600
-    headers:
-      Content-Type: application/json
-      User-Agent: REST
-    unit_of_measurement: V
-```
--->
-
-
-[hacs]: https://github.com/hacs/integration
-[hacsbadge]: https://img.shields.io/badge/HACS-Default-blue.svg?style=for-the-badge&logo=homeassistantcommunitystore&logoColor=ccc
-
-[hainstall]: https://my.home-assistant.io/redirect/config_flow_start/?domain=tibber_local
-[hainstallbadge]: https://img.shields.io/badge/dynamic/json?style=for-the-badge&logo=home-assistant&logoColor=ccc&label=usage&suffix=%20installs&cacheSeconds=15600&url=https://analytics.home-assistant.io/custom_integrations.json&query=$.tibber_local.total
-
-[ghs]: https://github.com/sponsors/marq24
-[ghsbadge]: https://img.shields.io/github/sponsors/marq24?style=for-the-badge&logo=github&logoColor=ccc&link=https%3A%2F%2Fgithub.com%2Fsponsors%2Fmarq24&label=Sponsors
-
-[buymecoffee]: https://www.buymeacoffee.com/marquardt24
-[buymecoffeebadge]: https://img.shields.io/badge/buy%20me%20a-coffee-blue.svg?style=for-the-badge&logo=buymeacoffee&logoColor=ccc&link=https%3A%2F%2Fwww.buymeacoffee.com%2Fmarquardt24
-
-[buymecoffee2]: https://buymeacoffee.com/marquardt24/membership
-[buymecoffeebadge2]: https://img.shields.io/badge/coffee-subs-blue.svg?style=for-the-badge&logo=buymeacoffee&logoColor=ccc&link=https%3A%2F%2Fbuymeacoffee.com%2Fmarquardt24%2Fmembership
-
-[paypal]: https://paypal.me/marq24
-[paypalbadge]: https://img.shields.io/badge/paypal-me-blue.svg?style=for-the-badge&logo=paypal&logoColor=ccc&link=https%3A%2F%2Fpaypal.me%2Fmarq24
-
-[wero]: https://share.weropay.eu/p/1/c/6O371wjUW5
-[werobadge]: https://img.shields.io/badge/_wero-me_-blue.svg?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZwogICByb2xlPSJpbWciCiAgIHZpZXdCb3g9IjAgMCA0Mi4wNDY1MDEgNDAuODg2NyIKICAgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIgo+CiAgPGcKICAgICBjbGlwLXBhdGg9InVybCgjY2xpcDApIgogICAgIHRyYW5zZm9ybT0idHJhbnNsYXRlKC01Ny4zODE4KSI+CiAgICA8cGF0aAogICAgICAgZD0ibSA3OC40MDUxLDMwLjM1NzQgYyAwLDAgLTAuMDE4NSwwIC0wLjAyNzgsMCAtNC4zMTg0LDAgLTcuMzQ2MiwtMi41NzY5IC04LjY0NjEsLTUuOTg4NyBIIDk5LjA2OTggQyA5OS4zMDU3LDIzLjA4NDkgOTkuNDI4MywyMS43NzExIDk5LjQyODMsMjAuNDQxIDk5LjQyODMsOS43NTY3MyA5MS43Mzc1LDAuMDEzODc4NyA3OC40MDUxLDAgdiAxMC41MjcgYyA0LjM0MzksMC4wMTE2IDcuMzQxNiwyLjU4MzcgOC42Mjc2LDUuOTg4NyBoIC0yOS4yOTcgYyAtMC4yMzM2LDEuMjgzNyAtMC4zNTM5LDIuNTk3NiAtMC4zNTM5LDMuOTI3NiAwLDEwLjY5MTMgNy43MDAyLDIwLjQ0MzQgMjAuOTk1NSwyMC40NDM0IDAuMDA5MywwIDAuMDE4NSwwIDAuMDI3OCwwIHYgLTEwLjUyNyB6IgogICAgICAgZmlsbD0iI0NDQ0NDQyIvPgogICAgPHBhdGgKICAgICAgIGQ9Im0gNzguMzc3NCw0MC44ODQ0IGMgMC40NTEsMCAwLjg5NTEsLTAuMDEzOSAxLjMzNDYsLTAuMDM0NyAyLjcwMTcsLTAuMTM2NSA1LjE1MzUsLTAuNjgwMSA3LjMzOTMsLTEuNTU2NyAyLjE4NTgsLTAuODc2NyA0LjEwNTcsLTIuMDgxOCA1LjczODcsLTMuNTM5MSAxLjYzMywtMS40NTczIDIuOTgxNSwtMy4xNjQzIDQuMDI3LC01LjA0NDkgMC45NTA2LC0xLjcwOTQgMS42NDQ1LC0zLjU1OTkgMi4wNzk0LC01LjQ5MTMgSCA4Ni42NzIgYyAtMC4yNDk4LDAuNTE1OCAtMC41NDEzLDEuMDA4NSAtMC44NzQ0LDEuNDY4OCAtMC40NTU2LDAuNjI5MSAtMC45ODk5LDEuMjAwNSAtMS41OTYsMS42OTMyIC0wLjYwNiwwLjQ5MjcgLTEuMjg2LDAuOTA5IC0yLjAzNTQsMS4yMzA2IC0wLjc0OTUsMC4zMjE1IC0xLjU2NiwwLjU0ODIgLTIuNDQ5NSwwLjY2MTUgLTAuNDMwMywwLjA1NTUgLTAuODc0NCwwLjA4NzkgLTEuMzM0NywwLjA4NzkgLTIuNzUwMiwwIC00Ljk3NzYsLTEuMDQ3OCAtNi41NjY3LC0yLjY4NzggbCAtNy45NDc2LDcuOTQ3OCBjIDMuNTM2NiwzLjIyOTIgOC40NDI2LDUuMjY0NyAxNC41MTY2LDUuMjY0NyB6IgogICAgICAgZmlsbD0idXJsKCNwYWludDApIgogICAgICAgc3R5bGU9ImZpbGw6dXJsKCNwYWludDApIiAvPgogICAgPHBhdGgKICAgICAgIGQ9Ik0gNzguMzc3NywwIEMgNjcuMTAxNiwwIDU5Ljg1MDIsNy4wMTMzNyA1Ny45MDcyLDE1LjY2OTEgSCA3MC4wOTcgYyAxLjQ1NzIsLTIuOTgxNyA0LjMyNzcsLTUuMTQyMSA4LjI4MDcsLTUuMTQyMSAzLjE1MDMsMCA1LjU5NTIsMS4zNDYyIDcuMTkzNSwzLjM4MTggTCA5My41OTA1LDUuODg5MiBDIDkwLjAwNzYsMi4zMDE1NSA4NC44NTY1LDAuMDAyMzEzMTIgNzguMzc1MywwLjAwMjMxMzEyIFoiCiAgICAgICBmaWxsPSJ1cmwoI3BhaW50MSkiCiAgICAgICBzdHlsZT0iZmlsbDp1cmwoI3BhaW50MSkiIC8+CiAgPC9nPgogIDxkZWZzPgogICAgPGxpbmVhckdyYWRpZW50CiAgICAgICBpZD0icGFpbnQwIgogICAgICAgeDE9IjkyLjc0MzY5OCIKICAgICAgIHkxPSIxOC4wMjYxOTkiCiAgICAgICB4Mj0iNzQuNzU0NTAxIgogICAgICAgeTI9IjQwLjMxMDIiCiAgICAgICBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CiAgICAgIDxzdG9wCiAgICAgICAgIG9mZnNldD0iMC4wMiIKICAgICAgICAgc3RvcC1jb2xvcj0iI0NDQ0NDQyIKICAgICAgICAgc3RvcC1vcGFjaXR5PSIwIi8+CiAgICAgIDxzdG9wCiAgICAgICAgIG9mZnNldD0iMC4zOSIKICAgICAgICAgc3RvcC1jb2xvcj0iI0NDQ0NDQyIKICAgICAgICAgc3RvcC1vcGFjaXR5PSIwLjY2Ii8+CiAgICAgIDxzdG9wCiAgICAgICAgIG9mZnNldD0iMC42OCIKICAgICAgICAgc3RvcC1jb2xvcj0iI0NDQ0NDQyIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICAgIDxsaW5lYXJHcmFkaWVudAogICAgICAgaWQ9InBhaW50MSIKICAgICAgIHgxPSI2MS4yNzA0MDEiCiAgICAgICB5MT0iMjMuMDE3Nzk5IgogICAgICAgeDI9Ijc5Ljc1NDUwMSIKICAgICAgIHkyPSI0LjUzNDI5OTkiCiAgICAgICBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CiAgICAgIDxzdG9wCiAgICAgICAgIG9mZnNldD0iMC4wMiIKICAgICAgICAgc3RvcC1jb2xvcj0iI0NDQ0NDQyIKICAgICAgICAgc3RvcC1vcGFjaXR5PSIwIi8+CiAgICAgIDxzdG9wCiAgICAgICAgIG9mZnNldD0iMC4zOSIKICAgICAgICAgc3RvcC1jb2xvcj0iI0NDQ0NDQyIKICAgICAgICAgc3RvcC1vcGFjaXR5PSIwLjY2Ii8+CiAgICAgIDxzdG9wCiAgICAgICAgIG9mZnNldD0iMC42OCIKICAgICAgICAgc3RvcC1jb2xvcj0iI0NDQ0NDQyIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICAgIDxjbGlwUGF0aAogICAgICAgaWQ9ImNsaXAwIj4KICAgICAgPHJlY3QKICAgICAgICAgd2lkdGg9IjE3Ny45MSIKICAgICAgICAgaGVpZ2h0PSI0MSIKICAgICAgICAgZmlsbD0iI2ZmZmZmZiIKICAgICAgICAgeD0iMCIKICAgICAgICAgeT0iMCIgLz4KICAgIDwvY2xpcFBhdGg+CiAgPC9kZWZzPgo8L3N2Zz4=
-
-[revolut]: https://revolut.me/marq24
-[revolutbadge]: https://img.shields.io/badge/_revolut-me_-blue.svg?style=for-the-badge&logo=revolut&logoColor=ccc&link=https%3A%2F%2Frevolut.me%2Fmarq24
-
-[applepay]: https://revolut.me/marq24
-[applepaybadge]: https://img.shields.io/badge/_apple-pay_-blue.svg?style=for-the-badge&logo=applepay&logoColor=ccc&link=https%3A%2F%2Frevolut.me%2Fmarq24
-
-[wise]: https://wise.com/pay/me/matthiasm1046
-[wisebadge]: https://img.shields.io/badge/_wise-me_-blue.svg?style=for-the-badge&logo=wise&logoColor=ccc&link=https%3A%2F%2Fwise.com%2Fpay%2Fme%2Fmatthiasm1046
+[release]: https://github.com/Xander2980/pulse-bridge/releases/latest
+[releasebadge]: https://img.shields.io/github/v/release/Xander2980/pulse-bridge?style=for-the-badge
+[tests]: https://github.com/Xander2980/pulse-bridge/actions/workflows/tests.yaml
+[testsbadge]: https://img.shields.io/github/actions/workflow/status/Xander2980/pulse-bridge/tests.yaml?branch=main&style=for-the-badge&label=tests
+[hassfest]: https://github.com/Xander2980/pulse-bridge/actions/workflows/hassfest.yaml
+[hassfestbadge]: https://img.shields.io/github/actions/workflow/status/Xander2980/pulse-bridge/hassfest.yaml?branch=main&style=for-the-badge&label=hassfest
+[licensebadge]: https://img.shields.io/github/license/Xander2980/pulse-bridge?style=for-the-badge

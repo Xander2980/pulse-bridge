@@ -1,25 +1,24 @@
-name: Not-Yet-Implemented Protocol Report
-description: If you are sure that the ip/host information you have provided is correct but the integration can not establish a connection to your Tibber pulse
+name: Unsupported Protocol Report
+description: The host and password are correct, but the integration cannot read data from your Pulse / meter.
 labels: enhancement
 body:
   - type: checkboxes
     id: checklist
     attributes:
       label: Checklist
-      description: Please go though this short checklist - TIA
       options:
-        - label: I have installed the **latest** release (or BETA) version of the integration and home assistant.
+        - label: I use the latest release of the integration and a supported Home Assistant version.
           required: true
-        - label: I have checked that the issue still exist with a none default __Node number__ (not equals 1) - check 2,3 or 4
+        - label: I have checked whether the problem also occurs with another node number (2, 3 or 4 instead of 1).
           required: true
-        - label: I have prepared DEBUG log output (for technical issues) |
-            In most of the cases of a technical error/issue I would have the need to ask for DEBUG log output of the integration. There is a short [tutorial/guide 'How to provide DEBUG log' here](https://github.com/marq24/ha-senec-v3/blob/main/docs/HA_DEBUG.md)
+        - label: I attach a debug log ([how to enable debug logging](https://github.com/Xander2980/pulse-bridge/blob/main/docs/troubleshooting.md#enable-debug-logging)).
           required: true
   - type: dropdown
     id: system
     attributes:
-      label: Meter type? |
-        check your http://[YOUR-PULSE-IP]/pulse/1/config (old fw http://[YOUR-PULSE-IP]/nodes/1/config)
+      label: Meter type
+      description: |
+        Shown on `http://<bridge-ip>/pulse/1/config` (older firmware: `http://<bridge-ip>/nodes/1/config`).
       multiple: false
       options:
         - Auto scan mode
@@ -33,18 +32,17 @@ body:
   - type: textarea
     id: data
     attributes:
-      label: Output of the Tibber webfrontent data.json |
-        check http://[YOUR-PULSE-IP]/pulse/1/data or http://[YOUR-PULSE-IP]/node_data.json?node_id=1 (old fw http://[YOUR-PULSE-IP]/nodes/1/data or http://[YOUR-PULSE-IP]/data.json?node_id=1)
-      placeholder: "Please copy and paste the output of your (old fw http://[YOUR-PULSE-IP]/node_data.json?node_id=1) - you might like to create/check the possible DEBUG log output of the home assistant integration"
+      label: Bridge data output
+      description: |
+        Output of `http://<bridge-ip>/pulse/1/data` or `http://<bridge-ip>/node_data.json?node_id=1`
+        (older firmware: `http://<bridge-ip>/nodes/1/data` or `http://<bridge-ip>/data.json?node_id=1`).
       render: shell
   - type: textarea
     id: logs
     attributes:
-      label: Integration DEBUG log
-      placeholder: "Please copy and paste of the DEBUG log output of the integration"
+      label: Debug log
       render: shell
   - type: textarea
     id: content
     attributes:
-      label: Any additional description
-      placeholder: "Can you provide any additional information?"
+      label: Additional information

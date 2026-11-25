@@ -1,9 +1,10 @@
+# Pulse Bridge for Tibber – Copyright 2026 Xander (Xander2980). Apache-2.0, see LICENSE.
 import asyncio
 
 import pytest
 
-from tibber_local import tibber_client
-from tibber_local.tibber_client import TibberLocalBridge, WS_MAX_FRAME, ENERGY_JUMP_CONFIRMATIONS
+from pulse_bridge import bridge_client
+from pulse_bridge.bridge_client import PulseBridgeClient, WS_MAX_FRAME, ENERGY_JUMP_CONFIRMATIONS
 
 IMPORT_OBIS = "0100010800ff"
 
@@ -16,8 +17,8 @@ class FakeEntry:
         return self.value
 
 
-def make_bridge() -> TibberLocalBridge:
-    return TibberLocalBridge(host="127.0.0.1", pwd="test", websession=object(), node_num=1)
+def make_bridge() -> PulseBridgeClient:
+    return PulseBridgeClient(host="127.0.0.1", pwd="test", websession=object(), node_num=1)
 
 
 # ---------------------------------------------------------------- F-15: plaintext values
@@ -28,33 +29,33 @@ def make_bridge() -> TibberLocalBridge:
     ("ABC123", "ABC123", None),
 ])
 def test_parse_plaintext_value(raw, expected_value, expected_unit):
-    value, unit = TibberLocalBridge.parse_plaintext_value(raw)
+    value, unit = PulseBridgeClient.parse_plaintext_value(raw)
     assert value == pytest.approx(expected_value) if isinstance(expected_value, float) else value == expected_value
     if expected_unit is None:
         assert unit is None
     else:
-        assert unit == tibber_client.find_unit_int_from_string(expected_unit)
+        assert unit == bridge_client.find_unit_int_from_string(expected_unit)
         assert unit is not None
 
 
 # ---------------------------------------------------------------- F-13: websocket header
 def test_header_parsing():
-    assert TibberLocalBridge._ws_parse_header_string('<device:"ABCDEF" topic:"sml/data">') == ("sml/data", "abcdef")
+    assert PulseBridgeClient._ws_parse_header_string('<device:"ABCDEF" topic:"sml/data">') == ("sml/data", "abcdef")
 
 
 def test_header_without_topic_and_device_does_not_raise():
-    assert TibberLocalBridge._ws_parse_header_string("<foo bar>") == (None, None)
-    assert TibberLocalBridge._ws_parse_header_bytes(b"\xff\xfe") == (None, None)
+    assert PulseBridgeClient._ws_parse_header_string("<foo bar>") == (None, None)
+    assert PulseBridgeClient._ws_parse_header_bytes(b"\xff\xfe") == (None, None)
 
 
 # ---------------------------------------------------------------- F-30
 def test_gen_log_list_is_module_level():
-    assert tibber_client.gen_log_list({}) == []
+    assert bridge_client.gen_log_list({}) == []
 
 
 # ---------------------------------------------------------------- F-35
 def test_node_number_float_is_converted():
-    bridge = TibberLocalBridge(host="127.0.0.1", pwd="test", websession=object(), node_num=3.0)
+    bridge = PulseBridgeClient(host="127.0.0.1", pwd="test", websession=object(), node_num=3.0)
     assert "node_id=3.0" not in bridge.url_data_classic
     assert bridge.url_data_classic.endswith("node_id=3")
 

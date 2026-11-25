@@ -1,6 +1,6 @@
 # Setting Up the Tibber Bridge for Non-Tibber Customers
 
-If you have a Tibber Bridge (and IR sensor) and are not a Tibber customer anymore, you can still use the Tibber Bridge to get the grid meter readings into you HA.
+If you have a Tibber Bridge (and IR sensor) and are not a Tibber customer anymore, you can still use the Tibber Bridge to get the grid meter readings into your Home Assistant via **Pulse Bridge for Tibber**.
 
 ## MQTT Settings
 

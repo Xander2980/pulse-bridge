@@ -1,3 +1,5 @@
+# Pulse Bridge for Tibber – based on marq24/ha-tibber-pulse-local (Apache-2.0).
+# Modified by Xander (Xander2980), 2026: renamed and changed for Pulse Bridge for Tibber. See NOTICE.
 import logging
 from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
@@ -5,7 +7,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.util import slugify
 
-from . import TibberLocalDataUpdateCoordinator, TibberLocalEntity
+from . import PulseBridgeDataUpdateCoordinator, PulseBridgeEntity
 from .const import (
     DOMAIN,
     BINARY_SENSOR_TYPES,
@@ -33,15 +35,15 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
             should_add = bool(metrics_values)
 
         if should_add:
-            entities.append(TibberLocalBinarySensor(coordinator, description))
+            entities.append(PulseBridgeBinarySensor(coordinator, description))
 
     async_add_entities(entities)
 
 
-class TibberLocalBinarySensor(TibberLocalEntity, BinarySensorEntity):
+class PulseBridgeBinarySensor(PulseBridgeEntity, BinarySensorEntity):
     def __init__(
             self,
-            coordinator: TibberLocalDataUpdateCoordinator,
+            coordinator: PulseBridgeDataUpdateCoordinator,
             description: BinarySensorEntityDescription
     ):
         """Initialize a singular value sensor."""

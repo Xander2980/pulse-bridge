@@ -1,4 +1,5 @@
-"""Test setup: makes 'tibber_local.tibber_client' importable without a full Home Assistant install.
+# Pulse Bridge for Tibber – Copyright 2026 Xander (Xander2980). Apache-2.0, see LICENSE.
+"""Test setup: makes 'pulse_bridge.bridge_client' importable without a full Home Assistant install.
 
 If Home Assistant is not installed, the few HA modules that the client (and const.py) import are
 replaced by lightweight stubs. The package '__init__.py' (that needs the complete HA core) is skipped
@@ -12,7 +13,7 @@ import types
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PKG_DIR = ROOT / "custom_components" / "tibber_local"
+PKG_DIR = ROOT / "custom_components" / "pulse_bridge"
 
 
 class _StubMeta(type):
@@ -71,11 +72,11 @@ def _install_ha_stubs():
 
 
 def _register_package():
-    if "tibber_local" in sys.modules:
+    if "pulse_bridge" in sys.modules:
         return
-    pkg = types.ModuleType("tibber_local")
+    pkg = types.ModuleType("pulse_bridge")
     pkg.__path__ = [str(PKG_DIR)]
-    sys.modules["tibber_local"] = pkg
+    sys.modules["pulse_bridge"] = pkg
 
 
 _install_ha_stubs()

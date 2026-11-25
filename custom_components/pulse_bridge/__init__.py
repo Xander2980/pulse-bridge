@@ -1,3 +1,5 @@
+# Pulse Bridge for Tibber – based on marq24/ha-tibber-pulse-local (Apache-2.0).
+# Modified by Xander (Xander2980), 2026: renamed and changed for Pulse Bridge for Tibber. See NOTICE.
 import logging
 import time
 from datetime import timedelta
@@ -19,7 +21,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, CoreState
 from homeassistant.exceptions import ConfigEntryNotReady, ConfigEntryAuthFailed
-from homeassistant.helpers import entity_registry, device_registry as device_reg, issue_registry as ir, config_validation as cv
+from homeassistant.helpers import device_registry as device_reg, issue_registry as ir, config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.event import async_track_time_interval, async_call_later
@@ -41,8 +43,6 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     MODE_3_SML_1_04,
 
-    CONFIG_VERSION,
-    CONFIG_MINOR_VERSION,
 
     OBIS_DATA_KEY,
     NODES_KEY,
@@ -63,7 +63,7 @@ from .const import (
     BATTERY_LEVEL_ESTIMATED
 )
 from .entity import CustomFriendlyNameEntity
-from .tibber_client import TibberLocalBridge, BridgeAuthError, BridgeNotFoundError, gen_log_list
+from .bridge_client import PulseBridgeClient, BridgeAuthError, BridgeNotFoundError, gen_log_list
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,101 +77,6 @@ def mask_map(d: dict) -> dict:
     return {k: mask_map(v) if isinstance(v, dict) else ("<MASKED>" if k.lower() in MASKED_KEYS else v)
             for k, v in d.items()}
 
-async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry):
-    if config_entry.version < 2:
-        if config_entry.data is not None and len(config_entry.data) > 0:
-            _LOGGER.debug(f"async_migrate_entry(): Migrating configuration from version {config_entry.version}.{config_entry.minor_version}")
-            if config_entry.options is not None and len(config_entry.options):
-                new_data = {**config_entry.data, **config_entry.options}
-            else:
-                new_data = config_entry.data
-            hass.config_entries.async_update_entry(config_entry, data=new_data, options={}, version=2, minor_version=0)
-            _LOGGER.debug(f"async_migrate_entry(): Migration to configuration version {config_entry.version}.{config_entry.minor_version} successful")
-
-    if config_entry.version == 2 and config_entry.minor_version == 0:
-        # update from 2.0 to 2.1 [ensure that all unique_id's are lower case!]
-        _LOGGER.info(f"async_migrate_entry(): Migration: from v{config_entry.version}.{config_entry.minor_version} to v{CONFIG_VERSION}.{CONFIG_MINOR_VERSION}")
-        registry = entity_registry.async_get(hass)
-
-        # 1'st run - ensure that all 'unique_id' are lower case...
-        entities = entity_registry.async_entries_for_config_entry(registry, config_entry.entry_id)
-        for a_entity in entities:
-            if a_entity.unique_id != a_entity.unique_id.lower():
-                new_unique_id = a_entity.unique_id.lower()
-                _LOGGER.info(f"async_migrate_entry(): Entity ID: {a_entity.entity_id}, Unique ID: {a_entity.unique_id} updated!")
-                for already_existing_entity in entities:
-                    if already_existing_entity.unique_id == new_unique_id:
-                        _LOGGER.info(f"async_migrate_entry(): Entity ID: {a_entity.entity_id}, Unique ID: {new_unique_id} already exists! - Will PURGE previous {already_existing_entity.entity_id}")
-                        registry.async_remove(already_existing_entity.entity_id)
-
-                registry.async_update_entity(a_entity.entity_id, new_unique_id=new_unique_id)
-
-        # 2'nd run - add the DOMAIN...
-        entities = entity_registry.async_entries_for_config_entry(registry, config_entry.entry_id)
-        prefix = f"{DOMAIN.lower()}.".lower()
-        for a_entity in entities:
-            if not a_entity.unique_id.startswith(prefix):
-                new_unique_id = f"{DOMAIN}.{a_entity.unique_id}".lower()
-                _LOGGER.debug(f"async_migrate_entry(): Entity ID: {a_entity.entity_id}, Unique ID: {a_entity.unique_id} will be updated!")
-                registry.async_update_entity(a_entity.entity_id, new_unique_id=new_unique_id)
-
-        hass.config_entries.async_update_entry(config_entry, version=CONFIG_VERSION, minor_version=CONFIG_MINOR_VERSION)
-        _LOGGER.info(f"async_migrate_entry(): Migration to configuration version {config_entry.version}.{config_entry.minor_version} successful")
-
-    # unique_id migration...
-    if config_entry.version == 2 and config_entry.minor_version == 1:
-        # first thing we must to is we must check if there is a device_id available.
-        if CONF_DEVICE_ID in config_entry.data and config_entry.data.get(CONF_DEVICE_ID, None) is not None:
-            # ONLY if the config entry has a device_id we will migrate the entry to 2.2
-            device_id = config_entry.data.get(CONF_DEVICE_ID, None)
-            if device_id is None:
-                # skipping the migration... (hopefully we will be called again???)
-                _LOGGER.info(f"async_migrate_entry(): device_id is None for config entry {config_entry.entry_id} - can not migrate entry yet!")
-                return True
-
-            _LOGGER.info(f"async_migrate_entry(): Migrating configuration from version {config_entry.version}.{config_entry.minor_version}")
-
-            registry = entity_registry.async_get(hass)
-            entities = entity_registry.async_entries_for_config_entry(registry, config_entry.entry_id)
-
-            # the current (aka OLD) unique_id impl:
-            # return f"{DOMAIN}.{self._title}_{self.entity_description.key}".lower()
-            old_uuid_prefix = f"{DOMAIN}.{config_entry.title}_".lower()
-            for a_entity in entities:
-                if a_entity.unique_id.startswith(old_uuid_prefix):
-
-                    # 1. we have to get the raw entity key
-                    tag_key = a_entity.unique_id.removeprefix(old_uuid_prefix)
-                    # generate the new uid
-                    new_unique_id = f"tibber_local_uid_{device_id}_{tag_key}".lower()
-                    if a_entity.unique_id != new_unique_id:
-                        _LOGGER.info(f"Will update Entity ID: {a_entity.entity_id}, Unique ID: {a_entity.unique_id} to {new_unique_id}")
-
-                        # this is here just as fallback (should not happen at all)...
-                        for already_existing_entity in entities:
-                            if already_existing_entity.unique_id == new_unique_id:
-                                _LOGGER.info(f"Entity ID: {a_entity.entity_id}, Unique ID: {new_unique_id} already exists! - Will PURGE previous {already_existing_entity.entity_id}")
-                                registry.async_remove(already_existing_entity.entity_id)
-
-                        # finally saving the new unique_id to the entity registry...
-                        registry.async_update_entity(a_entity.entity_id, new_unique_id=new_unique_id)
-
-            # finally PURGING all existing devices of the config Entry - since we will now use the device_id as identifier!
-            try:
-                a_device_reg = device_reg.async_get(hass)
-                if a_device_reg is not None:
-                    all_devices = device_reg.async_entries_for_config_entry(a_device_reg, config_entry.entry_id)
-                    for a_device in all_devices:
-                        _LOGGER.debug(f"async_migrate_entry(): PURGING device: {a_device.id}")
-                        a_device_reg.async_remove_device(device_id=a_device.id)
-            except Exception as ex:
-                _LOGGER.warning(f"async_migrate_entry(): failed: {type(ex).__name__} - {ex}")
-
-            hass.config_entries.async_update_entry(config_entry, version=CONFIG_VERSION, minor_version=CONFIG_MINOR_VERSION)
-            _LOGGER.info(f"async_migrate_entry(): Migration to configuration version {config_entry.version}.{config_entry.minor_version} successful")
-
-    return True
-
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -179,7 +84,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
     return True
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
-    _LOGGER.info(f"async_setup_entry(): Starting TibberLocal - ConfigEntry: {mask_map(dict(config_entry.as_dict()))}")
+    _LOGGER.info(f"async_setup_entry(): Starting Pulse Bridge - ConfigEntry: {mask_map(dict(config_entry.as_dict()))}")
 
     if DOMAIN not in hass.data:
         value = "UNKOWN"
@@ -187,9 +92,9 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
 
     # if polling is NOT enabled - we will use of the websocket implementation...
     use_websocket = not config_entry.data.get(CONF_USE_POLLING, DEFAULT_USE_POLLING)
-    coordinator = TibberLocalDataUpdateCoordinator(hass, config_entry)
+    coordinator = PulseBridgeDataUpdateCoordinator(hass, config_entry)
     init_succeeded = await coordinator.init_on_load(use_websocket)
-    _LOGGER.info(f"async_setup_entry(): TibberLocal - init_succeeded: {init_succeeded}")
+    _LOGGER.info(f"async_setup_entry(): Pulse Bridge - init_succeeded: {init_succeeded}")
 
     if not init_succeeded: #or coordinator.data is None:
         raise ConfigEntryNotReady
@@ -229,11 +134,11 @@ async def entry_update_listener(hass: HomeAssistant, config_entry: ConfigEntry) 
     await hass.config_entries.async_reload(config_entry.entry_id)
 
 
-class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
+class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, config_entry):
         if config_entry is None:
-            _LOGGER.info(f"TibberLocalDataUpdateCoordinator(): created - just to parse the serial number...")
+            _LOGGER.info(f"PulseBridgeDataUpdateCoordinator(): created - just to parse the serial number...")
             super().__init__(hass, _LOGGER, name=DOMAIN)
         else:
             self._host = config_entry.data[CONF_HOST]
@@ -260,7 +165,7 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
             # initial configuration phase - so we read it from the config_entry.data ONLY!
             com_mode = int(config_entry.data.get(CONF_MODE, MODE_3_SML_1_04))
 
-            self.bridge = TibberLocalBridge(host=self._host, pwd=the_pwd, websession=async_get_clientsession(hass),
+            self.bridge = PulseBridgeClient(host=self._host, pwd=the_pwd, websession=async_get_clientsession(hass),
                                             node_num=self.node_num, com_mode=com_mode,
                                             options={"ignore_parse_errors": ignore_parse_errors},
                                             coordinator=self)
@@ -357,12 +262,12 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
         if self._device_info is None:
             if self._use_websocket_in_config:
                 used_protocol = "WebSocket"
-                a_name = "Tibber Pulse+Bridge [local push]"
+                a_name = "Pulse Bridge [local push]"
             else:
                 used_protocol = "HTTP REST"
-                a_name = "Tibber Pulse+Bridge [local poll]"
+                a_name = "Pulse Bridge [local poll]"
 
-            self._device_info_model_raw = f"Tibber Pulse+Bridge {used_protocol}"
+            self._device_info_model_raw = f"Tibber Pulse IR + Bridge ({used_protocol})"
             self._device_info =  {
                 "identifiers": {(DOMAIN, self._host, (self._config_entry.title if self.use_conf_entry_title_in_ids else self.device_id))},
                 "name": a_name,
@@ -471,7 +376,7 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
         self._use_classic = self.bridge.use_classic
 
         if _LOGGER.isEnabledFor(logging.INFO):
-            # F-30: 'tibber_client' was never imported - this line raised a NameError
+            # F-30: 'bridge_client' was never imported - this line raised a NameError
             _LOGGER.info(f"init_on_load(): after init - found OBIS entries: '{gen_log_list(bridge_data)}'")
 
         # was the init successful ?!
@@ -695,11 +600,11 @@ class TibberLocalDataUpdateCoordinator(DataUpdateCoordinator):
         return None
 
 
-class TibberLocalEntity(CustomFriendlyNameEntity):
+class PulseBridgeEntity(CustomFriendlyNameEntity):
     _attr_has_entity_name = True
 
     def __init__(
-            self, coordinator: TibberLocalDataUpdateCoordinator, description: EntityDescription
+            self, coordinator: PulseBridgeDataUpdateCoordinator, description: EntityDescription
     ) -> None:
         super().__init__(coordinator)
         if description.entity_category != EntityCategory.DIAGNOSTIC:
@@ -733,7 +638,7 @@ class TibberLocalEntity(CustomFriendlyNameEntity):
         if self.coordinator.use_conf_entry_title_in_ids:
             return f"{DOMAIN}.{self.coordinator.config_entry.title}_{self.entity_description.key}".lower()
         else:
-            return f"tibber_local_uid_{self.coordinator.device_id}_{self.entity_description.key}".lower()
+            return f"pulse_bridge_uid_{self.coordinator.device_id}_{self.entity_description.key}".lower()
 
     def _friendly_name_internal(self) -> str | None:
         """Return the friendly name.

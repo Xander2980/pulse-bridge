@@ -1,9 +1,15 @@
 name: Feature Request
-description: When you miss a feature ora a OBIS code - just let me know!
+description: Suggest a feature or a missing OBIS code.
 labels: enhancement
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read the section *Feature requests* in [CONTRIBUTING.md](https://github.com/Xander2980/pulse-bridge/blob/main/CONTRIBUTING.md#feature-requests) first.
   - type: textarea
     id: content
     attributes:
-      label: Add a description
-      placeholder: "What do you miss in the current implementation?"
+      label: Description
+      placeholder: "What is missing, what would you use it for, and which OBIS codes or bridge data are involved?"
+    validations:
+      required: true

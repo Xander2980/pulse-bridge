@@ -1,3 +1,5 @@
+# Pulse Bridge for Tibber – based on marq24/ha-tibber-pulse-local (Apache-2.0).
+# Modified by Xander (Xander2980), 2026: renamed and changed for Pulse Bridge for Tibber. See NOTICE.
 import asyncio
 import json
 import logging
@@ -112,7 +114,7 @@ def clean_host(host_input):
             return parsed.hostname
 
 
-class TibberLocalBridge:
+class PulseBridgeClient:
     ONLY_DIGITS: re.Pattern = re.compile("^[0-9]+$")
     PLAIN_TEXT_LINE: re.Pattern = re.compile(r'(.*?)-(.*?):(.*?)\.(.*?)\.(.*?)(?:\*(.*?)|)\((.*?)\)')
     # matches OBIS codes with only one dot ('1-0:1.8(...)' or '1-0:1.8*255(...)') - the optional
@@ -171,12 +173,12 @@ class TibberLocalBridge:
 
     @staticmethod
     def check_first_six_parts_for_digits_or_last_is_none(parts: list[str]) -> bool:
-        return (TibberLocalBridge.ONLY_DIGITS.match(parts[1]) is not None and
-                TibberLocalBridge.ONLY_DIGITS.match(parts[2]) is not None and
-                TibberLocalBridge.ONLY_DIGITS.match(parts[3]) is not None and
-                TibberLocalBridge.ONLY_DIGITS.match(parts[4]) is not None and
-                TibberLocalBridge.ONLY_DIGITS.match(parts[5]) is not None and
-                (parts[6] is None or TibberLocalBridge.ONLY_DIGITS.match(parts[6]) is not None))
+        return (PulseBridgeClient.ONLY_DIGITS.match(parts[1]) is not None and
+                PulseBridgeClient.ONLY_DIGITS.match(parts[2]) is not None and
+                PulseBridgeClient.ONLY_DIGITS.match(parts[3]) is not None and
+                PulseBridgeClient.ONLY_DIGITS.match(parts[4]) is not None and
+                PulseBridgeClient.ONLY_DIGITS.match(parts[5]) is not None and
+                (parts[6] is None or PulseBridgeClient.ONLY_DIGITS.match(parts[6]) is not None))
 
     @staticmethod
     def _ws_parse_header_string(payload_head):
@@ -206,7 +208,7 @@ class TibberLocalBridge:
     @staticmethod
     def _ws_parse_header_bytes(sml_head: bytes):
         try:
-            return TibberLocalBridge._ws_parse_header_string(sml_head.decode('ascii', errors='ignore'))
+            return PulseBridgeClient._ws_parse_header_string(sml_head.decode('ascii', errors='ignore'))
         except (UnicodeDecodeError, ValueError) as e:
             _LOGGER.info(f"_ws_parse_header_bytes(): Failed to parse bytes header: {e}")
         return (None, None)
@@ -221,7 +223,7 @@ class TibberLocalBridge:
 
         if websession is not None:
             a_host = clean_host(host)
-            _LOGGER.info(f"restarting TibberLocalBridge integration... for host: '{a_host}' node: '{node_num}' com_mode: '{com_mode}' with options: {options}")
+            _LOGGER.info(f"restarting PulseBridgeClient integration... for host: '{a_host}' node: '{node_num}' com_mode: '{com_mode}' with options: {options}")
             self.web_session = websession
 
             enc = base64.b64encode(f"admin:{pwd}".encode('utf-8')).decode('utf-8')
@@ -415,10 +417,10 @@ class TibberLocalBridge:
             await self._check_modes_internal(MODE_3_SML_1_04, MODE_99_PLAINTEXT)
 
         elif self._com_mode in [MODE_1_IEC_62056_21, MODE_2_Logarex]:
-            # https://github.com/marq24/ha-tibber-pulse-local/issues/29
+            # upstream issue marq24/ha-tibber-pulse-local#29:
             # looks like we can parse 'IEC_62056_21' as plaintext?!
 
-            # https://github.com/marq24/ha-tibber-pulse-local/issues/136
+            # upstream issue marq24/ha-tibber-pulse-local#136:
             # looks like we can parse 'Logarex' also as plaintext?!
             await self._check_modes_internal(MODE_99_PLAINTEXT, MODE_3_SML_1_04)
 
@@ -428,14 +430,14 @@ class TibberLocalBridge:
 
     async def _check_modes_internal(self, mode_1: int, mode_2: int):
         _LOGGER.debug(f"detect_com_mode is {self._com_mode}: will try to read {mode_1}")
-        await self.read_tibber_local(mode_1, retry_count=0, log_payload=True)
+        await self.read_bridge_data(mode_1, retry_count=0, log_payload=True)
         if len(self._obis_values) > 0:
             self._com_mode = mode_1
             _LOGGER.debug(f"detect_com_mode(): 1 SUCCESS -> _com_mode: {self._com_mode}")
         else:
             if (mode_2 != -1):
                 _LOGGER.debug(f"detect_com_mode(): 1 is {self._com_mode}: {mode_1} failed - will try to read {mode_2}")
-                await self.read_tibber_local(mode_2, retry_count=0, log_payload=True)
+                await self.read_bridge_data(mode_2, retry_count=0, log_payload=True)
                 if len(self._obis_values) > 0:
                     self._com_mode = mode_2
                     _LOGGER.debug(f"detect_com_mode(): 2 SUCCESS -> _com_mode: {self._com_mode}")
@@ -477,14 +479,14 @@ class TibberLocalBridge:
         # F-07: the complete polling read (incl. all retries) has a limited time budget
         self._read_deadline = time.monotonic() + READ_TIME_BUDGET
         try:
-            await self.read_tibber_local(mode=self._com_mode, retry_count=0)
+            await self.read_bridge_data(mode=self._com_mode, retry_count=0)
         finally:
             self._read_deadline = None
         await self.updated_tibber_nodes_if_needed()
         await self.updated_tibber_nodes_metrics_if_needed()
 
     async def update_and_log(self):
-        await self.read_tibber_local(mode=self._com_mode, retry_count=0, log_payload=True)
+        await self.read_bridge_data(mode=self._com_mode, retry_count=0, log_payload=True)
 
     async def _redetect_fw_after_404(self, failed_url: str) -> bool:
         """F-36: the bridge returned 404 for one of our URLs - maybe the bridge FW has been updated (OTA)
@@ -505,10 +507,10 @@ class TibberLocalBridge:
             _LOGGER.warning(f"_redetect_fw_after_404(): bridge returned 404 for {failed_url} - FW re-detection did not change the URLs")
         return changed
 
-    async def read_tibber_local(self, mode: int, retry_count: int, log_payload: bool = False, fw_redetected: bool = False):
+    async def read_bridge_data(self, mode: int, retry_count: int, log_payload: bool = False, fw_redetected: bool = False):
         if self.url_data is None:
             await self.check_and_apply_fw_version()
-        _LOGGER.debug(f"read_tibber_local(): start[{retry_count}] - mode: {mode} request: {self.url_data}")
+        _LOGGER.debug(f"read_bridge_data(): start[{retry_count}] - mode: {mode} request: {self.url_data}")
         # on init we wait up to 60 seconds till we get a reply from the bridge (when HA is starting, plenty of
         # requests are running...
         retry_after_fw_change = False
@@ -542,7 +544,7 @@ class TibberLocalBridge:
                         await self.mode_99_read_plaintext(plaintext_payload, retry_count, log_payload)
 
                     if _LOGGER.isEnabledFor(logging.DEBUG):
-                        _LOGGER.debug(f"read_tibber_local: after[{retry_count}] read - found OBIS entries: '{gen_log_list(self._obis_values)}'")
+                        _LOGGER.debug(f"read_bridge_data: after[{retry_count}] read - found OBIS entries: '{gen_log_list(self._obis_values)}'")
 
                 # F-08: no 'BaseException' - CancelledError must not be swallowed
                 except (BridgeAuthError, BridgeNotFoundError):
@@ -551,7 +553,7 @@ class TibberLocalBridge:
                     _LOGGER.warning(f"access to bridge failed with exception: {type(exc).__name__} - {exc}")
 
         if retry_after_fw_change:
-            await self.read_tibber_local(mode=mode, retry_count=retry_count, log_payload=log_payload, fw_redetected=True)
+            await self.read_bridge_data(mode=mode, retry_count=retry_count, log_payload=log_payload, fw_redetected=True)
 
     def _set_obis_values(self, new_values: dict):
         """Replace the current obis values - energy totals are checked for plausibility (F-14)."""
@@ -623,7 +625,7 @@ class TibberLocalBridge:
 
                     # if there are not at least 2 dot's before the opening '(', we must insert a '.0' before
                     # the opening '(' [see issue #73]
-                    a_line = TibberLocalBridge.TWO_DIGIT_CODE_PATTERN.sub(r'\1.0\2\3', a_line, count=1)
+                    a_line = PulseBridgeClient.TWO_DIGIT_CODE_PATTERN.sub(r'\1.0\2\3', a_line, count=1)
 
                     # it looks like that in the format 'IEC-62056-21' there are the '1-0:' is missing ?! [this is really
                     # a very DUMP implementation] - but we check, if the line has at least
@@ -635,17 +637,17 @@ class TibberLocalBridge:
 
                     # obis pattern is 'a-b:c.d.e*f' - 'parts[0]' is the text before the match, 'parts[1:7]' are
                     # the six obis values and 'parts[7]' is the value (including its optional unit)
-                    parts = TibberLocalBridge.PLAIN_TEXT_LINE.split(a_line)
+                    parts = PulseBridgeClient.PLAIN_TEXT_LINE.split(a_line)
                     if len(parts) == 9:
-                        if TibberLocalBridge.check_first_six_parts_for_digits_or_last_is_none(parts):
-                            obis_hex = TibberLocalBridge.obis_hex_from_parts(parts, not self.ignore_parse_errors)
+                        if PulseBridgeClient.check_first_six_parts_for_digits_or_last_is_none(parts):
+                            obis_hex = PulseBridgeClient.obis_hex_from_parts(parts, not self.ignore_parse_errors)
                             if obis_hex is None:
                                 if not self.ignore_parse_errors:
                                     _LOGGER.debug(f"mode_99_read_plaintext(): ignore invalid code: {a_line}")
                                 continue
 
                             # F-15: robust split of value & unit (empty unit, multiple '*')
-                            value, unit = TibberLocalBridge.parse_plaintext_value(parts[7])
+                            value, unit = PulseBridgeClient.parse_plaintext_value(parts[7])
 
                             # creating finally the "right" object from the parsed information
                             entry = SmlListEntry()
@@ -761,9 +763,9 @@ class TibberLocalBridge:
                             self._use_fallback_by_default = True
 
                 if use_fallback_impl:
-                    # see issue https://github.com/marq24/ha-tibber-pulse-local/issues/64
+                    # see upstream issue marq24/ha-tibber-pulse-local#64
                     # there exist some devices that can't be parsed via 'get_obis()'
-                    # see also my issue @ https://github.com/spacemanspiff2007/SmlLib/issues/28
+                    # see also https://github.com/spacemanspiff2007/SmlLib/issues/28
                     sml_list = []
                     for msg in sml_frame.parse_frame():
                         # we simply get through all message bodies and check if we can find the 'val_list' - if so
@@ -808,7 +810,7 @@ class TibberLocalBridge:
             return
 
         await asyncio.sleep(delay)
-        await self.read_tibber_local(mode=mode, retry_count=retry_count + 1)
+        await self.read_bridge_data(mode=mode, retry_count=retry_count + 1)
 
     async def updated_tibber_nodes_metrics_if_needed(self, log_payload: bool = False):
         if self._node_metrics_update_is_running:
@@ -898,7 +900,7 @@ class TibberLocalBridge:
 
         binary_head = binary_data[:separator_pos + 1]
         _LOGGER.debug(f"_ws_handle_binary_message(): WSMsgType.BINARY head: {binary_head}")
-        topic, msg_for_device_id = TibberLocalBridge._ws_parse_header_bytes(binary_head)
+        topic, msg_for_device_id = PulseBridgeClient._ws_parse_header_bytes(binary_head)
 
         if self.node_device_id is not None and self.node_device_id != msg_for_device_id:
             _LOGGER.debug(f"_ws_handle_binary_message(): WSMsgType.BINARY device of node_num '{self.node_device_id}' not matching the device in the message {msg_for_device_id}")
@@ -933,7 +935,7 @@ class TibberLocalBridge:
 
         text_head = text_data[:separator_pos + 1]
         _LOGGER.debug(f"_ws_handle_text_message(): WSMsgType.TEXT head: {text_head}")
-        topic, msg_for_device_id = TibberLocalBridge._ws_parse_header_string(text_head)
+        topic, msg_for_device_id = PulseBridgeClient._ws_parse_header_string(text_head)
 
         if self.node_device_id is not None and self.node_device_id != msg_for_device_id:
             _LOGGER.debug(f"_ws_handle_text_message(): WSMsgType.TEXT device of node_num '{self.node_device_id}' not matching the device in the message {msg_for_device_id}")
@@ -1020,8 +1022,8 @@ class TibberLocalBridge:
 
         # we should always try first, if the default WebSocket implementation will
         # work (could be that another FW update will bring that back to live) - and
-        # then for sure the aiohttp lib implementation is way more robust than anything
-        # marq24 had developed! - YES the additional check will take max 10 seconds!
+        # then the aiohttp lib implementation is more robust than the minimal own
+        # implementation (ws_connect_2026_09) - the additional check takes max 10 seconds!
         if self._use_classic or await self.ws_check_implementation():
             _LOGGER.info(f"ws_connect(): will start the classic websocket implementation")
             await self.ws_connect_classic()

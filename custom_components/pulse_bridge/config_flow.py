@@ -1,3 +1,5 @@
+# Pulse Bridge for Tibber – based on marq24/ha-tibber-pulse-local (Apache-2.0).
+# Modified by Xander (Xander2980), 2026: renamed and changed for Pulse Bridge for Tibber. See NOTICE.
 import asyncio
 import logging
 from typing import Any
@@ -22,7 +24,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import selector
 from homeassistant.util import slugify
 
-from . import TibberLocalDataUpdateCoordinator
+from . import PulseBridgeDataUpdateCoordinator
 from .const import (
     DOMAIN,
     DEFAULT_NAME,
@@ -42,12 +44,12 @@ from .const import (
     UNKNOWN_SERIAL,
     MODE_3_SML_1_04,
 )
-from .tibber_client import TibberLocalBridge, BridgeAuthError, BridgeNotFoundError
+from .bridge_client import PulseBridgeClient, BridgeAuthError, BridgeNotFoundError
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def tibber_local_entries(hass: HomeAssistant):
+def pulse_bridge_entries(hass: HomeAssistant):
     conf_hosts = []
     for entry in hass.config_entries.async_entries(DOMAIN):
         a_host = entry.data[CONF_HOST]
@@ -69,14 +71,14 @@ def tibber_local_entries(hass: HomeAssistant):
 
 
 def _host_in_configuration_exists(a_host: str, a_node, hass: HomeAssistant) -> bool:
-    if f"{a_node}@@{a_host}" in tibber_local_entries(hass):
+    if f"{a_node}@@{a_host}" in pulse_bridge_entries(hass):
         return True
     return False
 
 def _config_title_exists(a_title: str, hass: HomeAssistant) -> bool:
     return slugify(a_title) in [slugify(a_entry.title) for a_entry in hass.config_entries.async_entries(DOMAIN)]
 
-class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = CONFIG_VERSION
     MINOR_VERSION = CONFIG_MINOR_VERSION
 
@@ -92,16 +94,16 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._default_obis_codes = None
         self._node_device_id = None
 
-    async def _test_connection_tibber_local(self, host, pwd, node_num):
+    async def _test_connection(self, host, pwd, node_num):
         self._errors = {}
         self._node_device_id = None
         try:
-            bridge = TibberLocalBridge(host=host, pwd=pwd, websession=async_get_clientsession(self.hass), node_num=node_num)
+            bridge = PulseBridgeClient(host=host, pwd=pwd, websession=async_get_clientsession(self.hass), node_num=node_num)
             try:
                 # we MUST init the device_id
                 await bridge.get_eui_for_node()
                 if bridge.node_device_id is not None:
-                    _LOGGER.debug(f"_test_connection_tibber_local(): Found device_id: {bridge.node_device_id} for node: {node_num}")
+                    _LOGGER.debug(f"_test_connection(): Found device_id: {bridge.node_device_id} for node: {node_num}")
                     self._node_device_id = bridge.node_device_id
                     await bridge.detect_com_mode()
                     if bridge._com_mode in ENUM_IMPLEMENTATIONS:
@@ -114,24 +116,24 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             except ValueError as val_err:
                 self._errors[CONF_HOST] = "unknown_mode"
-                _LOGGER.warning(f"_test_connection_tibber_local(): ValueError: {val_err}")
+                _LOGGER.warning(f"_test_connection(): ValueError: {val_err}")
 
         except BridgeAuthError as exc:
             self._errors[CONF_PASSWORD] = "login_failed"
-            _LOGGER.warning(f"_test_connection_tibber_local(): {exc}")
+            _LOGGER.warning(f"_test_connection(): {exc}")
         except (OSError, ClientError, asyncio.TimeoutError, BridgeNotFoundError) as exc:
             self._errors[CONF_HOST] = "cannot_connect"
-            _LOGGER.warning(f"_test_connection_tibber_local(): Could not connect to local Tibber Pulse Bridge at {host}, check host/ip address\n{type(exc).__name__} -> {exc}")
+            _LOGGER.warning(f"_test_connection(): Could not connect to local Tibber Pulse Bridge at {host}, check host/ip address\n{type(exc).__name__} -> {exc}")
         return False
 
-    async def _test_data_available(self, bridge: TibberLocalBridge, host: str) -> bool:
+    async def _test_data_available(self, bridge: PulseBridgeClient, host: str) -> bool:
         try:
             await bridge.update_and_log()
 
-            # unfortunately, there is no other parser than the TibberLocalDataUpdateCoordinator,
+            # unfortunately, there is no other parser than the PulseBridgeDataUpdateCoordinator,
             # so we must create a dummy one here, to be able to parse the serial data/number
             # from the found smart-meter
-            coordinator = TibberLocalDataUpdateCoordinator(self.hass, None)
+            coordinator = PulseBridgeDataUpdateCoordinator(self.hass, None)
 
             if len(bridge._obis_values.keys()) > 0:
                 coordinator.data = {OBIS_DATA_KEY: bridge._obis_values}
@@ -184,7 +186,7 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         entry = self._get_reauth_entry()
         if user_input is not None:
             pwd = user_input[CONF_PASSWORD]
-            bridge = TibberLocalBridge(host=entry.data[CONF_HOST], pwd=pwd,
+            bridge = PulseBridgeClient(host=entry.data[CONF_HOST], pwd=pwd,
                                        websession=async_get_clientsession(self.hass),
                                        node_num=int(entry.data.get(CONF_NODE_NUMBER, DEFAULT_NODE_NUMBER)),
                                        com_mode=int(entry.data.get(CONF_MODE, MODE_3_SML_1_04)))
@@ -231,7 +233,7 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if _config_title_exists(name, self.hass) or _host_in_configuration_exists(host, node_num, self.hass):
                     return self.async_abort(reason="already_configured")
 
-            if await self._test_connection_tibber_local(host, pwd, node_num):
+            if await self._test_connection(host, pwd, node_num):
                 a_data = {CONF_NAME: name,
                           CONF_HOST: host,
                           CONF_PASSWORD: pwd,
@@ -298,7 +300,7 @@ class TibberLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }),
                 user_input,
             ),
-            description_placeholders={"repo": "https://github.com/marq24/ha-tibber-pulse-local"},
+            description_placeholders={"repo": "https://github.com/Xander2980/pulse-bridge"},
             last_step=True,
             errors=self._errors,
         )

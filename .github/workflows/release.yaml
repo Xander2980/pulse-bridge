@@ -18,10 +18,10 @@ jobs:
 
       - name: Build zip archive
         run: |
-          cd "${{ github.workspace }}/custom_components/tibber_local"
-          zip -r "${{ github.workspace }}/tibber_local.zip" . -x "*__pycache__*" -x "*.pyc"
+          cd "${{ github.workspace }}/custom_components/pulse_bridge"
+          zip -r "${{ github.workspace }}/pulse_bridge.zip" . -x "*__pycache__*" -x "*.pyc"
 
       - name: Upload zip to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: ${{ github.workspace }}/tibber_local.zip
+          files: ${{ github.workspace }}/pulse_bridge.zip

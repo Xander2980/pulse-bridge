@@ -1,0 +1,34 @@
+Pulse Bridge for Tibber
+Copyright 2026 Xander (https://github.com/Xander2980)
+
+This product is a modified version of "ha-tibber-pulse-local"
+(https://github.com/marq24/ha-tibber-pulse-local) by marq24 and contributors,
+licensed under the Apache License, Version 2.0. The original work was taken
+from commit 1fe05f9 of that repository. Copyright of the original work
+remains with its authors.
+
+Modifications (Apache License 2.0, section 4(b)), made by Xander, 2026:
+- Renamed the project, the Home Assistant domain (tibber_local -> pulse_bridge),
+  the package directory, modules, classes, unique-id prefixes and the release
+  archive; new icon and logo images in custom_components/pulse_bridge/brand/.
+- custom_components/pulse_bridge/bridge_client.py (was tibber_client.py):
+  WebSocket hardening, parsing and error handling, authentication and
+  not-found errors.
+- custom_components/pulse_bridge/__init__.py: re-authentication, repair issue,
+  clean unload, firmware switch at runtime; legacy migration removed.
+- custom_components/pulse_bridge/config_flow.py: re-authentication step,
+  unique-id handling, input normalisation.
+- custom_components/pulse_bridge/sensor.py, binary_sensor.py, const.py,
+  manifest.json, translations/*.json: naming, state handling, texts.
+- tests/, pytest.ini, requirements_dev.txt, .github/: tests, CI, templates.
+- All documentation (README.md, docs/, CHANGELOG.md, CONTRIBUTING.md,
+  SECURITY.md, SUPPORT.md) rewritten or newly written.
+The complete history of changes is available in the Git history of
+https://github.com/Xander2980/pulse-bridge.
+
+This project is not affiliated with or endorsed by Tibber AS. "Tibber" and
+"Tibber Pulse" are used only to describe compatible hardware.
+
+Third-party software used at runtime:
+- SmlLib (https://github.com/spacemanspiff2007/SmlLib), GPL-3.0, installed
+  by Home Assistant as a separate package (not distributed with this project).

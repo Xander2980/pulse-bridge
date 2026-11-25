@@ -1,7 +1,7 @@
 {
-  "name": "Tibber Pulse Local",
+  "name": "Pulse Bridge for Tibber",
   "zip_release": true,
-  "filename": "tibber_local.zip",
+  "filename": "pulse_bridge.zip",
   "content_in_root": false,
   "homeassistant": "2026.9.0",
   "hacs": "2.0.0",

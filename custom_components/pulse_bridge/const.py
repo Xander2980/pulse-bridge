@@ -1,3 +1,5 @@
+# Pulse Bridge for Tibber – based on marq24/ha-tibber-pulse-local (Apache-2.0).
+# Modified by Xander (Xander2980), 2026: renamed and changed for Pulse Bridge for Tibber. See NOTICE.
 from dataclasses import dataclass
 from typing import Final
 
@@ -21,9 +23,9 @@ from homeassistant.const import (
     PERCENTAGE,
 )
 
-DOMAIN: Final = "tibber_local"
+DOMAIN: Final = "pulse_bridge"
 MANUFACTURE: Final = "Tibber"
-DEFAULT_NAME: Final = "ltibber"
+DEFAULT_NAME: Final = "pulsebridge"
 DEFAULT_HOST: Final = "tibber-bridge"
 DEFAULT_PWD: Final = ""
 DEFAULT_USE_POLLING: Final = False
