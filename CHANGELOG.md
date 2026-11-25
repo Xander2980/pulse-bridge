@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.5] – 2026-11-25
+
+### Fixed
+
+- Many SML telegrams were dropped with a CRC error (bridge delivers single bytes with bit 5 cleared, e.g. `b` → `B`). Such telegrams (up to two corrupted bytes) are now repaired; the repair is only used when the CRC matches again and the solution is unique. This also removes the delayed values caused by retries and the WebSocket fallback.
+- Setup/reconfigure failed with "no data" when the first reads had CRC errors: the data test now runs for up to 30 s with up to 10 fast retries.
+
 ## [1.0.4] – 2026-11-25
 
 ### Fixed

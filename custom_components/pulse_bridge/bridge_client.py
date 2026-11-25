@@ -17,6 +17,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from smllib import SmlStreamReader
 from smllib.const import UNITS
+from smllib.crc import x25 as sml_crc_x25
 from smllib.errors import CrcError, SmlLibException
 from smllib.sml import SmlListEntry, ObisCode
 
@@ -43,9 +44,12 @@ MAX_RETRY_DELAY: Final = 10 #1.2
 # F-07: the complete polling read (incl. retries) must not take longer than this
 READ_TIME_BUDGET: Final = 25.0
 # setup/reconfigure: the user is waiting in the dialog - retry faster and give up earlier
-SETUP_READ_TIME_BUDGET: Final = 15.0
+SETUP_READ_TIME_BUDGET: Final = 30.0
 SETUP_MIN_RETRY_DELAY: Final = 1.0
 SETUP_MAX_RETRY_DELAY: Final = 2.0
+SETUP_MAX_READ_RETRIES: Final = 10
+# SML CRC repair: max number of corrupted bytes (bit 5 cleared) that will be repaired per telegram
+SML_REPAIR_MAX_FLIPS: Final = 2
 # F-03: max time for TCP connect + handshake of the self-implemented websocket
 WS_CONNECT_TIMEOUT: Final = 10.0
 # F-04: max size of a single websocket frame / of a fragmented message (SML telegrams are < 1 KiB)
@@ -76,6 +80,51 @@ async def read_limited(response, limit: int = MAX_RESPONSE_BYTES) -> bytes:
     if len(data) > limit:
         raise ValueError(f"response too large: > {limit} bytes")
     return data
+
+
+def repair_sml_bit5_errors(msg: bytes) -> bytes | None:
+    """Try to repair a SML telegram with a CRC error.
+
+    Some bridges deliver telegrams where single bytes have bit 5 (0x20) cleared - e.g. a 'b' (0x62)
+    becomes a 'B' (0x42). For max. SML_REPAIR_MAX_FLIPS such bytes we search the positions (bytes in
+    the range 0x40-0x5F) whose corrected value makes the CRC of the telegram match again. The repair
+    is only accepted, if there is exactly one solution - the CRC verifies the result.
+
+    'msg' is the complete telegram (start sequence till CRC) - like provided by 'CrcError.msg'."""
+    if len(msg) < 16:
+        return None
+    data_len = len(msg) - 2
+    crc_msg = msg[-2] << 8 | msg[-1]
+    target = sml_crc_x25.get_crc(msg[:-2]) ^ crc_msg
+    if target == 0:
+        return msg
+
+    # the CRC is affine: crc(a ^ b) == crc(a) ^ crc(b) ^ crc(0) - so every candidate position has
+    # a fixed 'syndrome' and we only have to find the position(s) whose syndromes sum up to 'target'
+    zero_crc = sml_crc_x25.get_crc(bytes(data_len))
+    candidates = [i for i in range(8, len(msg) - 8) if 0x40 <= msg[i] <= 0x5F]
+    syndromes = {}
+    for pos in candidates:
+        error = bytearray(data_len)
+        error[pos] = 0x20
+        syndromes[pos] = sml_crc_x25.get_crc(error) ^ zero_crc
+
+    solutions = [(pos,) for pos in candidates if syndromes[pos] == target]
+    if len(solutions) == 0 and SML_REPAIR_MAX_FLIPS >= 2:
+        by_syndrome: dict[int, list[int]] = {}
+        for pos in candidates:
+            by_syndrome.setdefault(syndromes[pos], []).append(pos)
+        for pos in candidates:
+            for other in by_syndrome.get(syndromes[pos] ^ target, []):
+                if other > pos:
+                    solutions.append((pos, other))
+
+    if len(solutions) != 1:
+        return None
+    repaired = bytearray(msg)
+    for pos in solutions[0]:
+        repaired[pos] |= 0x20
+    return bytes(repaired)
 
 
 def parse_json_list_tolerant(text: str) -> list:
@@ -341,6 +390,8 @@ class PulseBridgeClient:
 
         self._fallback_usage_counter = 0
         self._use_fallback_by_default = False
+        # number of SML telegrams with a CRC error that could be repaired
+        self.crc_repaired_count = 0
         if com_mode == MODE_3_SML_1_04:
             self.MAX_READ_RETRIES = 5
         else:
@@ -805,7 +856,18 @@ class PulseBridgeClient:
         stream = SmlStreamReader()
         stream.add(payload)
         try:
-            sml_frame = stream.get_frame()
+            try:
+                sml_frame = stream.get_frame()
+            except CrcError as crc_exc:
+                # some bridges deliver telegrams with single corrupted bytes - try to repair them
+                repaired = repair_sml_bit5_errors(crc_exc.msg)
+                if repaired is None:
+                    raise
+                self.crc_repaired_count += 1
+                _LOGGER.debug(f"mode_03_read_sml(): repaired CRC error in SML telegram (total repaired: {self.crc_repaired_count})")
+                stream = SmlStreamReader()
+                stream.add(repaired)
+                sml_frame = stream.get_frame()
             if sml_frame is None:
                 if not self.ignore_parse_errors:
                     # F-27: payload only on DEBUG level
@@ -870,7 +932,9 @@ class PulseBridgeClient:
             return False
 
     async def _check_for_retry_read(self, mode: int, retry_count: int):
-        if retry_count >= self.MAX_READ_RETRIES:
+        # setup/reconfigure: more (but faster) retries - the time budget limits the total duration
+        max_retries = max(self.MAX_READ_RETRIES, SETUP_MAX_READ_RETRIES) if self._fast_retry else self.MAX_READ_RETRIES
+        if retry_count >= max_retries:
             return
 
         if self._fast_retry:
