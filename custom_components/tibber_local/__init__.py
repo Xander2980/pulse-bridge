@@ -19,7 +19,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, CoreState
 from homeassistant.exceptions import ConfigEntryNotReady, ConfigEntryAuthFailed
-from homeassistant.helpers import entity_registry, device_registry as device_reg, issue_registry as ir
+from homeassistant.helpers import entity_registry, device_registry as device_reg, issue_registry as ir, config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.event import async_track_time_interval, async_call_later
@@ -171,6 +171,9 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry):
             _LOGGER.info(f"async_migrate_entry(): Migration to configuration version {config_entry.version}.{config_entry.minor_version} successful")
 
     return True
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 
 async def async_setup(hass: HomeAssistant, config: dict):
     return True

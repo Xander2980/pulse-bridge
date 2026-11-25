@@ -14,7 +14,7 @@
     "step": {
       "reauth_confirm": {
         "title": "Re-authenticate Tibber Pulse Bridge",
-        "description": "The bridge '{name}' rejected the stored password. Please enter the current bridge password.",
+        "description": "The bridge {name} rejected the stored password. Please enter the current bridge password.",
         "data": {
           "password": "Your bridge password"
         }
@@ -35,7 +35,7 @@
   "issues": {
     "endpoints_not_found": {
       "title": "Tibber Pulse Bridge: data endpoints not found",
-      "description": "The bridge of '{name}' answers with HTTP 404 for the data/metrics endpoints - even after a new firmware detection. The bridge firmware might have been changed. Please reload the integration and, if the problem persists, open an issue on GitHub."
+      "description": "The bridge of {name} answers with HTTP 404 for the data/metrics endpoints - even after a new firmware detection. The bridge firmware might have been changed. Please reload the integration and, if the problem persists, open an issue on GitHub."
     }
   },
   "entity": {

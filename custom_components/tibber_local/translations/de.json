@@ -16,7 +16,7 @@
     "step": {
       "reauth_confirm": {
         "title": "Tibber Pulse Bridge neu anmelden",
-        "description": "Die Bridge '{name}' hat das gespeicherte Passwort abgelehnt. Bitte gib das aktuelle Bridge-Passwort ein.",
+        "description": "Die Bridge {name} hat das gespeicherte Passwort abgelehnt. Bitte gib das aktuelle Bridge-Passwort ein.",
         "data": {
           "password": "Bridge-Passwort"
         }
@@ -45,7 +45,7 @@
   "issues": {
     "endpoints_not_found": {
       "title": "Tibber Pulse Bridge: Datenendpunkte nicht gefunden",
-      "description": "Die Bridge von '{name}' antwortet auch nach einer erneuten Firmware-Erkennung mit HTTP 404 für die Daten-/Metrik-Endpunkte. Möglicherweise wurde die Bridge-Firmware geändert. Bitte lade die Integration neu und erstelle ein Issue auf GitHub, falls das Problem bestehen bleibt."
+      "description": "Die Bridge von {name} antwortet auch nach einer erneuten Firmware-Erkennung mit HTTP 404 für die Daten-/Metrik-Endpunkte. Möglicherweise wurde die Bridge-Firmware geändert. Bitte lade die Integration neu und erstelle ein Issue auf GitHub, falls das Problem bestehen bleibt."
     }
   },
   "entity": {
