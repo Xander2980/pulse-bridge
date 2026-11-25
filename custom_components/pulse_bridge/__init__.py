@@ -18,9 +18,9 @@ from homeassistant.const import (
     Platform,
     EntityCategory,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady, ConfigEntryAuthFailed
-from homeassistant.helpers import device_registry as device_reg, issue_registry as ir, config_validation as cv
+from homeassistant.helpers import device_registry as device_reg, entity_registry as entity_reg, issue_registry as ir, config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.event import async_track_time_interval, async_call_later
@@ -83,6 +83,49 @@ def mask_map(d: dict) -> dict:
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
+def get_device_identifier(config_entry: ConfigEntry) -> tuple[str, str]:
+    # the device must be identified by a stable hardware feature (the node EUI) - never by the host/IP,
+    # otherwise every IP change (reconfigure) creates a new device and leaves the old one behind
+    return DOMAIN, str(config_entry.data.get(CONF_DEVICE_ID) or config_entry.entry_id)
+
+
+@callback
+def async_migrate_device_identifiers(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
+    # up to 1.0.8 the device identifier was (DOMAIN, host, title|device_id) - move the existing device
+    # to the stable identifier (keeps device_id, area, name...) and drop devices left behind by IP changes
+    new_identifier = get_device_identifier(config_entry)
+    dev_reg = device_reg.async_get(hass)
+    ent_reg = entity_reg.async_get(hass)
+    devices = device_reg.async_entries_for_config_entry(dev_reg, config_entry.entry_id)
+    legacy = [d for d in devices if new_identifier not in d.identifiers and any(i[0] == DOMAIN for i in d.identifiers)]
+    if not legacy:
+        return
+
+    def _entity_count(a_device) -> int:
+        return len(entity_reg.async_entries_for_device(ent_reg, a_device.id, include_disabled_entities=True))
+
+    if not any(new_identifier in d.identifiers for d in devices):
+        host = config_entry.data.get(CONF_HOST)
+        current = max(legacy, key=lambda d: (_entity_count(d), any(len(i) > 2 and i[1] == host for i in d.identifiers)))
+        try:
+            dev_reg.async_update_device(current.id, new_identifiers={new_identifier})
+            _LOGGER.info(f"async_migrate_device_identifiers(): device {current.id} now uses identifier {new_identifier}")
+            legacy.remove(current)
+        except Exception as ex:
+            _LOGGER.warning(f"async_migrate_device_identifiers(): could not migrate device {current.id}: {type(ex).__name__} - {ex}")
+            return
+
+    for a_device in legacy:
+        if _entity_count(a_device) == 0:
+            _LOGGER.info(f"async_migrate_device_identifiers(): removing orphaned device {a_device.id} {a_device.identifiers}")
+            dev_reg.async_remove_device(a_device.id)
+
+
+async def async_remove_config_entry_device(hass: HomeAssistant, config_entry: ConfigEntry, device_entry) -> bool:
+    # allow the user to delete devices that are not the current device of this entry (e.g. left behind by IP changes)
+    return get_device_identifier(config_entry) not in device_entry.identifiers
+
+
 async def async_setup(hass: HomeAssistant, config: dict):
     return True
 
@@ -92,6 +135,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
     if DOMAIN not in hass.data:
         value = "UNKOWN"
         hass.data.setdefault(DOMAIN, {"manifest_version": value})
+
+    async_migrate_device_identifiers(hass, config_entry)
 
     # if polling is NOT enabled - we will use of the websocket implementation...
     use_websocket = not config_entry.data.get(CONF_USE_POLLING, DEFAULT_USE_POLLING)
@@ -269,7 +314,7 @@ class PulseBridgeDataUpdateCoordinator(DataUpdateCoordinator):
 
             self._device_info_model_raw = f"Tibber Pulse IR + Bridge ({used_protocol})"
             self._device_info =  {
-                "identifiers": {(DOMAIN, self._host, (self._config_entry.title if self.use_conf_entry_title_in_ids else self.device_id))},
+                "identifiers": {get_device_identifier(self._config_entry)},
                 "name": a_name,
                 "model": f"{self._device_info_model_raw}",
                 "sw_version": f"{self._config_entry.data.get(CONF_ID, '-unknown-')}",

@@ -24,7 +24,8 @@ from homeassistant.const import (  # noqa: E402
     CONF_SCAN_INTERVAL,
 )
 from homeassistant.core import HomeAssistant  # noqa: E402
-from homeassistant.exceptions import ConfigEntryAuthFailed  # noqa: E402
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady  # noqa: E402
+from homeassistant.helpers import device_registry as dr, entity_registry as er, frame  # noqa: E402
 from homeassistant.helpers.update_coordinator import UpdateFailed  # noqa: E402
 
 from custom_components import pulse_bridge as integration  # noqa: E402
@@ -57,22 +58,26 @@ async def hass(tmp_path, monkeypatch):
     instance.config_entries.async_forward_entry_setups = AsyncMock()
     instance.config_entries.async_unload_platforms = AsyncMock(return_value=True)
     monkeypatch.setattr(config_flow, "async_get_clientsession", lambda hass: Mock())
+    frame.async_setup(instance)
+    dr.async_setup(instance)
+    await dr.async_load(instance, load_empty=True)
+    await er.async_load(instance, load_empty=True)
     yield instance
     await instance.async_stop()
 
 
-@pytest.fixture
-def entry():
+def make_entry(host="bridge", device_id="aabb", entry_id=None):
+    kwargs = {"entry_id": entry_id} if entry_id else {}
     return ConfigEntry(
         domain=DOMAIN,
         title="pulsebridge",
         version=2,
         minor_version=2,
         data={
-            CONF_HOST: "bridge",
+            CONF_HOST: host,
             CONF_PASSWORD: "test",
             CONF_NAME: "pulsebridge",
-            CONF_DEVICE_ID: "aabb",
+            CONF_DEVICE_ID: device_id,
             CONF_MODE: MODE_3_SML_1_04,
             CONF_NODE_NUMBER: 1,
             CONF_USE_POLLING: False,
@@ -81,10 +86,16 @@ def entry():
         },
         options={},
         source="user",
-        unique_id="pulse_bridge_aabb",
+        unique_id=f"pulse_bridge_{device_id}",
         discovery_keys=MappingProxyType({}),
         subentries_data=None,
+        **kwargs,
     )
+
+
+@pytest.fixture
+def entry():
+    return make_entry()
 
 
 @pytest_asyncio.fixture
@@ -290,3 +301,139 @@ async def test_reauthentication_rejects_invalid_data(hass, entry, monkeypatch):
     assert result["type"] == "form"
     assert result["errors"]["base"] == "cannot_connect"
     hass.config_entries.async_update_entry.assert_not_called()
+
+
+# --- device identity: an IP change must not create a new device -------------------------------
+
+
+def _register(hass, *entries):
+    known = {e.entry_id: e for e in entries}
+    hass.config_entries.async_get_entry.side_effect = known.get
+
+
+def _legacy_device(hass, entry, host, entity_keys=()):
+    # identifier format up to 1.0.8: (DOMAIN, host, device_id)
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, host, entry.data[CONF_DEVICE_ID])},
+        name="Pulse Bridge [local push]",
+    )
+    ent_reg = er.async_get(hass)
+    for key in entity_keys:
+        ent_reg.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            f"pulse_bridge_uid_{entry.data[CONF_DEVICE_ID]}_{key}",
+            config_entry=entry,
+            device_id=device.id,
+        )
+    return device
+
+
+def _devices(hass, entry):
+    return dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+
+
+async def test_device_identifier_does_not_depend_on_host(hass, monkeypatch):
+    monkeypatch.setattr(integration, "async_get_clientsession", lambda hass: Mock())
+    first = make_entry(host="10.0.0.1")
+    second = make_entry(host="10.0.0.2", entry_id=first.entry_id)
+    infos = []
+    for an_entry in (first, second):
+        coordinator = integration.PulseBridgeDataUpdateCoordinator(hass, an_entry)
+        infos.append(coordinator.get_device_info()["identifiers"])
+        await coordinator.async_shutdown()
+    assert infos[0] == infos[1] == {(DOMAIN, "aabb")}
+
+
+async def test_ip_change_keeps_device_and_removes_orphans(hass):
+    entry = make_entry(host="10.0.0.3")
+    _register(hass, entry)
+    _legacy_device(hass, entry, "10.0.0.1")
+    _legacy_device(hass, entry, "10.0.0.2")
+    current = _legacy_device(hass, entry, "10.0.0.3", ("0100010800ff", "available"))
+    integration.async_migrate_device_identifiers(hass, entry)
+    devices = _devices(hass, entry)
+    assert [d.id for d in devices] == [current.id]
+    assert devices[0].identifiers == {(DOMAIN, "aabb")}
+    entities = er.async_entries_for_device(er.async_get(hass), current.id)
+    assert {e.unique_id for e in entities} == {
+        "pulse_bridge_uid_aabb_0100010800ff",
+        "pulse_bridge_uid_aabb_available",
+    }
+    # restart / reload: migration is idempotent
+    integration.async_migrate_device_identifiers(hass, entry)
+    assert [d.id for d in _devices(hass, entry)] == [current.id]
+
+
+async def test_device_with_entities_wins_over_host_match(hass):
+    # the IP was changed again outside HA - entities still sit on the device of the old IP
+    entry = make_entry(host="10.0.0.9")
+    _register(hass, entry)
+    with_entities = _legacy_device(hass, entry, "10.0.0.1", ("0100010800ff",))
+    _legacy_device(hass, entry, "10.0.0.9")
+    integration.async_migrate_device_identifiers(hass, entry)
+    assert [d.id for d in _devices(hass, entry)] == [with_entities.id]
+
+
+async def test_further_ip_changes_reuse_the_device(hass, monkeypatch):
+    monkeypatch.setattr(integration, "async_get_clientsession", lambda hass: Mock())
+    entry = make_entry(host="10.0.0.1")
+    _register(hass, entry)
+    device = _legacy_device(hass, entry, "10.0.0.1", ("0100010800ff",))
+    integration.async_migrate_device_identifiers(hass, entry)
+    for host in ("10.0.0.2", "10.0.0.3"):
+        reconfigured = make_entry(host=host, entry_id=entry.entry_id)
+        _register(hass, reconfigured)
+        integration.async_migrate_device_identifiers(hass, reconfigured)
+        coordinator = integration.PulseBridgeDataUpdateCoordinator(hass, reconfigured)
+        identifiers = coordinator.get_device_info()["identifiers"]
+        await coordinator.async_shutdown()
+        assert dr.async_get(hass).async_get(device.id).identifiers == identifiers
+        assert [d.id for d in _devices(hass, reconfigured)] == [device.id]
+
+
+async def test_only_orphaned_devices_can_be_removed(hass):
+    entry = make_entry()
+    _register(hass, entry)
+    current = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "aabb")}
+    )
+    orphan = _legacy_device(hass, entry, "10.0.0.1", ("0100010800ff",))
+    assert not await integration.async_remove_config_entry_device(hass, entry, current)
+    assert await integration.async_remove_config_entry_device(hass, entry, orphan)
+
+
+async def test_multiple_bridges_keep_their_own_devices(hass):
+    first = make_entry(host="10.0.0.1", device_id="aabb")
+    second = make_entry(host="10.0.0.2", device_id="ccdd")
+    _register(hass, first, second)
+    dev_first = _legacy_device(hass, first, "10.0.0.1", ("0100010800ff",))
+    dev_second = _legacy_device(hass, second, "10.0.0.2", ("0100010800ff",))
+    integration.async_migrate_device_identifiers(hass, first)
+    integration.async_migrate_device_identifiers(hass, second)
+    assert [d.identifiers for d in _devices(hass, first)] == [{(DOMAIN, "aabb")}]
+    assert [d.identifiers for d in _devices(hass, second)] == [{(DOMAIN, "ccdd")}]
+    assert {d.id for d in _devices(hass, first) + _devices(hass, second)} == {
+        dev_first.id,
+        dev_second.id,
+    }
+
+
+async def test_unreachable_bridge_migrates_and_retries(hass, monkeypatch):
+    monkeypatch.setattr(integration, "async_get_clientsession", lambda hass: Mock())
+    entry = make_entry(host="10.0.0.2")
+    _register(hass, entry)
+    _legacy_device(hass, entry, "10.0.0.1")
+    device = _legacy_device(hass, entry, "10.0.0.2", ("0100010800ff",))
+    init = AsyncMock(return_value=False)
+    monkeypatch.setattr(integration.PulseBridgeDataUpdateCoordinator, "init_on_load", init)
+    with pytest.raises(ConfigEntryNotReady):
+        await integration.async_setup_entry(hass, entry)
+    assert [d.id for d in _devices(hass, entry)] == [device.id]
+    # bridge reachable again -> setup succeeds with the same device
+    init.return_value = True
+    assert await integration.async_setup_entry(hass, entry)
+    assert [d.id for d in _devices(hass, entry)] == [device.id]
+    await integration.async_unload_entry(hass, entry)

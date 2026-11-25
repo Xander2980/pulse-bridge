@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- The device is now identified by the bridge's node EUI instead of host/IP: changing the IP address (reconfigure) no longer creates a second device. Existing installations are migrated on startup (same device, area and name; unique IDs unchanged), and devices left behind by earlier IP changes without entities are removed automatically.
+- Devices that do not belong to the current bridge can be deleted in the UI ("Delete" was missing before).
+
 ## [1.0.8] – 2026-11-25
 
 ### Fixed
