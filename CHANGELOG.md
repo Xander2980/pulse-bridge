@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.8] – 2026-11-25
+
+### Fixed
+
+- Isolated read/decode failures of the bridge no longer mark all entities unavailable: the last values are kept for up to two failed reads in a row, only the third consecutive failure reports the update as failed.
+
 ## [1.0.7] – 2026-11-25
 
 ### Fixed
