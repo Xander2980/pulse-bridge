@@ -1,6 +1,7 @@
 name: HACS Action
 
 on:
+  workflow_dispatch:
   push:
   pull_request:
   schedule:
@@ -9,7 +10,7 @@ on:
 jobs:
   hacs:
     name: HACS Action
-    if: github.event.repository.fork == false
+    if: github.repository == 'Xander2980/pulse-bridge'
     runs-on: "ubuntu-latest"
     steps:
     - uses: "actions/checkout@v6"
