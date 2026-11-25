@@ -1,1 +1,5 @@
-pytest-homeassistant>=2026.11.0
+pytest>=8
+pytest-asyncio>=0.24
+aiohttp>=3.9
+smllib>=1.7
+ruff>=0.6
