@@ -49,7 +49,11 @@ SETUP_MIN_RETRY_DELAY: Final = 1.0
 SETUP_MAX_RETRY_DELAY: Final = 2.0
 SETUP_MAX_READ_RETRIES: Final = 10
 # SML CRC repair: max number of corrupted bytes (bit 5 cleared) that will be repaired per telegram
-SML_REPAIR_MAX_FLIPS: Final = 2
+# only single byte errors: with two flips the number of candidate pairs makes an accidental CRC match
+# (= a wrong value accepted as valid) far too likely for a 16 bit CRC
+SML_REPAIR_MAX_FLIPS: Final = 1
+# a repaired telegram is only accepted, if every energy total is already known and moved by at most this
+REPAIR_MAX_ENERGY_DELTA_WH: Final = 10_000
 # F-03: max time for TCP connect + handshake of the self-implemented websocket
 WS_CONNECT_TIMEOUT: Final = 10.0
 # F-04: max size of a single websocket frame / of a fragmented message (SML telegrams are < 1 KiB)
@@ -707,6 +711,23 @@ class PulseBridgeClient:
                         del new_values[obis]
         self._obis_values = new_values
 
+    def _repaired_values_plausible(self, new_values: dict) -> bool:
+        """A CRC repair can (rarely) produce a wrong telegram with a matching CRC - so the energy totals of a
+        repaired telegram must be known already and may only move forward by REPAIR_MAX_ENERGY_DELTA_WH."""
+        for obis, entry in new_values.items():
+            if not str(obis).lower().startswith(ENERGY_TOTAL_OBIS_PREFIXES):
+                continue
+            old_entry = self._obis_values.get(obis)
+            if old_entry is None:
+                return False
+            try:
+                delta = self._entry_value(entry) - self._entry_value(old_entry)
+            except Exception:
+                return False
+            if not 0 <= delta <= REPAIR_MAX_ENERGY_DELTA_WH:
+                return False
+        return True
+
     @staticmethod
     def _entry_value(entry):
         try:
@@ -889,6 +910,9 @@ class PulseBridgeClient:
                 stream = SmlStreamReader()
                 stream.add(repaired)
                 sml_frame = stream.get_frame()
+                was_repaired = True
+            else:
+                was_repaired = False
             if sml_frame is None:
                 if not self.ignore_parse_errors:
                     # F-27: payload only on DEBUG level
@@ -934,6 +958,10 @@ class PulseBridgeClient:
                     new_values = {}
                     for entry in sml_list:
                         new_values[entry.obis] = entry
+                    if was_repaired and not self._repaired_values_plausible(new_values):
+                        _LOGGER.debug("mode_03_read_sml(): repaired SML telegram rejected (energy totals not plausible)")
+                        await self._check_for_retry_read(mode=MODE_3_SML_1_04, retry_count=retry_count)
+                        return False
                     self._set_obis_values(new_values)
                     return True
                 return False

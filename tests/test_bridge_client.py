@@ -292,12 +292,15 @@ def _clear_bit5(telegram: bytes, count: int) -> bytes:
     return bytes(data)
 
 
-@pytest.mark.parametrize("flips", [1, 2])
-def test_sml_bit5_errors_are_repaired(flips):
+def test_sml_bit5_error_is_repaired():
     telegram = _sml_telegram()
-    corrupted = _clear_bit5(telegram, flips)
+    corrupted = _clear_bit5(telegram, 1)
     assert corrupted != telegram
     assert bridge_client.repair_sml_bit5_errors(corrupted) == telegram
+
+
+def test_sml_two_bit5_errors_are_not_repaired():
+    assert bridge_client.repair_sml_bit5_errors(_clear_bit5(_sml_telegram(), 2)) is None
 
 
 def test_sml_other_errors_are_not_repaired():
@@ -306,9 +309,29 @@ def test_sml_other_errors_are_not_repaired():
     assert bridge_client.repair_sml_bit5_errors(bytes(data)) is None
 
 
+def _read(bridge, payload):
+    return asyncio.run(bridge.mode_03_read_sml(payload, retry_count=bridge.MAX_READ_RETRIES, log_payload=False))
+
+
+def test_mode_03_rejects_repaired_telegram_without_known_totals():
+    bridge = make_bridge()
+    assert _read(bridge, _clear_bit5(_sml_telegram(), 1)) is False
+    assert bridge._obis_values == {}
+
+
+def test_mode_03_rejects_repaired_telegram_with_implausible_jump():
+    bridge = make_bridge()
+    assert _read(bridge, _sml_telegram()) is True
+    known = bridge._obis_values[IMPORT_OBIS]
+    bridge._obis_values[IMPORT_OBIS] = type("E", (), {"get_value": lambda self: 1234567.8 - 20_000})()
+    assert _read(bridge, _clear_bit5(_sml_telegram(), 1)) is False
+    assert known is not None
+
+
 def test_mode_03_uses_repaired_telegram():
     bridge = make_bridge()
-    ok = asyncio.run(bridge.mode_03_read_sml(_clear_bit5(_sml_telegram(), 2), retry_count=bridge.MAX_READ_RETRIES, log_payload=False))
+    assert _read(bridge, _sml_telegram()) is True
+    ok = _read(bridge, _clear_bit5(_sml_telegram(), 1))
     assert ok is True
     assert bridge.crc_repaired_count == 1
     assert bridge._obis_values[IMPORT_OBIS].get_value() == pytest.approx(1234567.8)
