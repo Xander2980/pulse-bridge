@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.4] – 2026-11-25
+
+### Fixed
+
+- Reconfigure/setup took very long: a failed read (e.g. CRC error) was retried up to five times with 2.5–10 s pauses, twice in a row and without a time limit. Setup and reconfigure now retry after 1–2 s and stop after 15 s.
+- Error `Unable to remove unknown job listener … start_watchdog` when the entry was reloaded (e.g. after reconfigure) after Home Assistant had started.
+
+### Added
+
+- Troubleshooting: values arrive with a delay (WebSocket ⛔ because a second integration uses the same node).
+
 ## [1.0.3] – 2026-11-25
 
 ### Fixed
@@ -56,7 +67,8 @@ First release as the independent project **Pulse Bridge for Tibber**, based on [
 
 - Unit tests for the bridge client and a CI workflow for lint and tests.
 
-[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.0...v1.0.1

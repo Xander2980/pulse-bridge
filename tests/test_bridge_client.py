@@ -223,3 +223,38 @@ def test_meter_mode_is_read_from_truncated_node_params():
     bridge = PulseBridgeClient(host="127.0.0.1", pwd="test", websession=_FakeSession(_FakeTextResponse(200, truncated)), node_num=3)
     asyncio.run(bridge.detect_com_mode_from_node_param27())
     assert bridge._com_mode == bridge_client.MODE_3_SML_1_04
+
+
+# ---------------------------------------------------------------- reconfigure: fast retries with a time budget
+def test_setup_read_uses_fast_retries_and_time_budget(monkeypatch):
+    bridge = make_bridge()
+    delays = []
+    reads = []
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+
+    async def fake_read(mode, retry_count, log_payload=False, fw_redetected=False):
+        reads.append(retry_count)
+        # every read fails (e.g. CRC error) -> retry
+        await bridge._check_for_retry_read(mode=mode, retry_count=retry_count)
+
+    monkeypatch.setattr(bridge_client.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(bridge, "read_bridge_data", fake_read)
+    asyncio.run(bridge.update_and_log())
+
+    assert delays, "a failed read must be retried"
+    assert all(bridge_client.SETUP_MIN_RETRY_DELAY <= d <= bridge_client.SETUP_MAX_RETRY_DELAY for d in delays)
+    assert len(reads) <= bridge.MAX_READ_RETRIES + 1
+    # the flags are reset for the normal polling
+    assert bridge._fast_retry is False
+    assert bridge._read_deadline is None
+
+
+def test_read_timeout_respects_time_budget():
+    bridge = make_bridge()
+    assert bridge._read_timeout() == 60.0
+    bridge._read_deadline = bridge_client.time.monotonic() + 8.0
+    assert bridge._read_timeout() <= 8.0
+    bridge._read_deadline = bridge_client.time.monotonic() - 1.0
+    assert bridge._read_timeout() == 5.0

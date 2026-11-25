@@ -139,34 +139,24 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _test_data_available(self, bridge: PulseBridgeClient, host: str) -> bool:
         try:
+            # one read with fast retries and a limited time budget - the user is waiting in the dialog
             await bridge.update_and_log()
 
-            # unfortunately, there is no other parser than the PulseBridgeDataUpdateCoordinator,
-            # so we must create a dummy one here, to be able to parse the serial data/number
-            # from the found smart-meter
-            coordinator = PulseBridgeDataUpdateCoordinator(self.hass, None)
-
             if len(bridge._obis_values.keys()) > 0:
+                # unfortunately, there is no other parser than the PulseBridgeDataUpdateCoordinator,
+                # so we must create a dummy one here, to be able to parse the serial data/number
+                # from the found smart-meter
+                coordinator = PulseBridgeDataUpdateCoordinator(self.hass, None)
                 coordinator.data = {OBIS_DATA_KEY: bridge._obis_values}
                 self._serial = coordinator.serial if coordinator.serial != UNKNOWN_SERIAL else self._node_device_id
                 _LOGGER.info(f"_test_data_available(): Successfully connect to local Tibber Pulse Bridge at {host} - found serial: {self._serial}")
                 if self._default_obis_codes is None:
                     self._default_obis_codes = list(bridge._obis_values.keys())
                 return True
-            else:
-                await asyncio.sleep(2)
-                await bridge.update_and_log()
-                if len(bridge._obis_values.keys()) > 0:
-                    coordinator.data = {OBIS_DATA_KEY: bridge._obis_values}
-                    self._serial = coordinator.serial if coordinator.serial != UNKNOWN_SERIAL else self._node_device_id
-                    _LOGGER.info(f"_test_data_available(): Successfully connect to local Tibber Pulse Bridge at {host} - found serial: {self._serial}")
-                    if self._default_obis_codes is None:
-                        self._default_obis_codes = list(bridge._obis_values.keys())
-                    return True
-                else:
-                    _LOGGER.warning(f"_test_data_available(): No data from Tibber Pulse Bridge at {host}")
-                    self._errors[CONF_HOST] = "no_data"
-                    return False
+
+            _LOGGER.warning(f"_test_data_available(): No data from Tibber Pulse Bridge at {host}")
+            self._errors[CONF_HOST] = "no_data"
+            return False
 
         except BridgeAuthError as exc:
             self._errors[CONF_PASSWORD] = "login_failed"

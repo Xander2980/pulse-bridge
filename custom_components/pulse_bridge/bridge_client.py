@@ -42,6 +42,10 @@ MAX_RETRY_DELAY: Final = 10 #1.2
 
 # F-07: the complete polling read (incl. retries) must not take longer than this
 READ_TIME_BUDGET: Final = 25.0
+# setup/reconfigure: the user is waiting in the dialog - retry faster and give up earlier
+SETUP_READ_TIME_BUDGET: Final = 15.0
+SETUP_MIN_RETRY_DELAY: Final = 1.0
+SETUP_MAX_RETRY_DELAY: Final = 2.0
 # F-03: max time for TCP connect + handshake of the self-implemented websocket
 WS_CONNECT_TIMEOUT: Final = 10.0
 # F-04: max size of a single websocket frame / of a fragmented message (SML telegrams are < 1 KiB)
@@ -329,6 +333,7 @@ class PulseBridgeClient:
 
         # F-07: deadline of the current polling cycle (None = no limit)
         self._read_deadline: float | None = None
+        self._fast_retry = False
         # F-36: time of the last FW re-detection (after a 404)
         self._LAST_FW_REDETECT: float | None = None
         # F-14: pending (implausible) energy values: obis -> (value, count)
@@ -468,6 +473,16 @@ class PulseBridgeClient:
             raise ValueError(f"NOT IMPLEMENTED yet! - Mode: {self._com_mode}")
 
     async def _check_modes_internal(self, mode_1: int, mode_2: int):
+        # only used during setup/reconfigure: fast retries with a limited time budget per mode
+        self._fast_retry = True
+        try:
+            await self._check_modes_internal_impl(mode_1, mode_2)
+        finally:
+            self._fast_retry = False
+            self._read_deadline = None
+
+    async def _check_modes_internal_impl(self, mode_1: int, mode_2: int):
+        self._read_deadline = time.monotonic() + SETUP_READ_TIME_BUDGET
         _LOGGER.debug(f"detect_com_mode is {self._com_mode}: will try to read {mode_1}")
         await self.read_bridge_data(mode_1, retry_count=0, log_payload=True)
         if len(self._obis_values) > 0:
@@ -476,6 +491,7 @@ class PulseBridgeClient:
         else:
             if (mode_2 != -1):
                 _LOGGER.debug(f"detect_com_mode(): 1 is {self._com_mode}: {mode_1} failed - will try to read {mode_2}")
+                self._read_deadline = time.monotonic() + SETUP_READ_TIME_BUDGET
                 await self.read_bridge_data(mode_2, retry_count=0, log_payload=True)
                 if len(self._obis_values) > 0:
                     self._com_mode = mode_2
@@ -525,8 +541,22 @@ class PulseBridgeClient:
         await self.updated_tibber_nodes_if_needed()
         await self.updated_tibber_nodes_metrics_if_needed()
 
-    async def update_and_log(self):
-        await self.read_bridge_data(mode=self._com_mode, retry_count=0, log_payload=True)
+    async def update_and_log(self, time_budget: float = SETUP_READ_TIME_BUDGET):
+        # used by the config flow (setup/reconfigure): short retry delays and a limited time budget
+        self._read_deadline = time.monotonic() + time_budget
+        self._fast_retry = True
+        try:
+            await self.read_bridge_data(mode=self._com_mode, retry_count=0, log_payload=True)
+        finally:
+            self._read_deadline = None
+            self._fast_retry = False
+
+    def _read_timeout(self) -> float:
+        timeout = 60.0 if len(self._obis_values) == 0 else 10.0
+        if self._read_deadline is not None:
+            # never wait longer for an answer than the time budget allows (min. 5 sec)
+            timeout = min(timeout, max(5.0, self._read_deadline - time.monotonic()))
+        return timeout
 
     async def _redetect_fw_after_404(self, failed_url: str) -> bool:
         """F-36: the bridge returned 404 for one of our URLs - maybe the bridge FW has been updated (OTA)
@@ -554,7 +584,7 @@ class PulseBridgeClient:
         # on init we wait up to 60 seconds till we get a reply from the bridge (when HA is starting, plenty of
         # requests are running...
         retry_after_fw_change = False
-        async with self.web_session.get(self.url_data, headers=self.REQ_HEADERS_BASIC_AUTH, ssl=False, timeout=60.0 if len(self._obis_values) == 0 else 10.0) as res:
+        async with self.web_session.get(self.url_data, headers=self.REQ_HEADERS_BASIC_AUTH, ssl=False, timeout=self._read_timeout()) as res:
             # F-09: wrong password must not end up in an endless 'UpdateFailed' loop
             if res.status in (401, 403):
                 raise BridgeAuthError(f"bridge rejected the credentials (HTTP {res.status}) - please check the password")
@@ -843,9 +873,14 @@ class PulseBridgeClient:
         if retry_count >= self.MAX_READ_RETRIES:
             return
 
-        delay = random.uniform(MIN_RETRY_DELAY, MAX_RETRY_DELAY)
+        if self._fast_retry:
+            delay = random.uniform(SETUP_MIN_RETRY_DELAY, SETUP_MAX_RETRY_DELAY)
+            read_reserve = 2.0
+        else:
+            delay = random.uniform(MIN_RETRY_DELAY, MAX_RETRY_DELAY)
+            read_reserve = 10.0
         # F-07: do not exceed the time budget of the current polling cycle (a read can take up to 10 sec)
-        if self._read_deadline is not None and time.monotonic() + delay + 10.0 > self._read_deadline:
+        if self._read_deadline is not None and time.monotonic() + delay + read_reserve > self._read_deadline:
             _LOGGER.debug(f"_check_for_retry_read(): skip retry {retry_count + 1} - time budget of this update cycle exhausted")
             return
 

@@ -15,16 +15,16 @@ from homeassistant.const import (
     CONF_PASSWORD,
     CONF_MODE,
     CONF_DEVICE_ID,
-    EVENT_HOMEASSISTANT_STARTED,
     Platform,
     EntityCategory,
 )
-from homeassistant.core import HomeAssistant, CoreState
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as device_reg, issue_registry as ir, config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.event import async_track_time_interval, async_call_later
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 #from homeassistant.util import slugify
@@ -103,13 +103,12 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry):
         await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
 
         if use_websocket:
-            # ws watchdog...
-            if hass.state is CoreState.running:
+            # ws watchdog: start now (HA running) or as soon as HA has started. F-12: the listener is
+            # removed on unload - 'async_at_started' does that safely also after it has fired
+            async def _start_watchdog(_hass: HomeAssistant) -> None:
                 await coordinator.start_watchdog()
-            else:
-                # F-12: the listener must be removed, when the entry is unloaded before HA has started
-                config_entry.async_on_unload(
-                    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, coordinator.start_watchdog))
+
+            config_entry.async_on_unload(async_at_started(hass, _start_watchdog))
 
         # no update listener: reconfigure/reauth reload the entry via 'async_update_reload_and_abort()'
         # (HA 2026.12 does not allow both anymore)

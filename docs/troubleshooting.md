@@ -26,6 +26,12 @@ Sometimes the bridge delivers an incomplete data packet. Such packets cannot be 
 - Check whether another client (e.g. a second integration) uses the WebSocket of the same node; enable polling for one of them.
 - After a bridge firmware update the integration detects the new endpoints automatically. If the repair issue *data endpoints not found* appears, reload the integration.
 
+## Values arrive with a delay
+
+The Pulse sends a new meter reading every few seconds; with a working WebSocket the entities follow within about a second. The device model in *Settings → Devices* shows the state: **✅** = WebSocket connected, **⛔** = no WebSocket, the integration then only reads the data in the polling interval.
+
+The most common reason for **⛔** is a second integration (e.g. the original `tibber_local`) that is connected to the same node – the bridge accepts only one WebSocket connection per node. Disable the other integration (or switch it to *Use old polling procedure*) and reload Pulse Bridge for Tibber. Nothing has to be changed at the meter.
+
 ## Enable debug logging
 
 *Settings → Devices & services → Pulse Bridge for Tibber → ⋮ → Enable debug logging*, reproduce the problem, then *Disable debug logging* – Home Assistant offers the log file for download. Alternatively in `configuration.yaml`:
