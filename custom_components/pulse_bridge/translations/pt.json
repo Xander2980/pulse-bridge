@@ -9,7 +9,9 @@
       "cannot_connect": "Falha ao conectar",
       "unknown": "Erro desconhecido",
       "no_data": "Não foi possível ler quaisquer dados do dispositivo",
-      "unknown_mode": "Por favor, verifique o IP/host ou o Número de Nó fornecido - se tem a certeza de que a sua informação está correta, o Tibber Pulse está a comunicar através de um protocolo que ainda não foi implementado - por favor, crie um log de DEBUG e abra uma questão no GitHub para que existam dados de exemplo deste protocolo."
+      "unknown_mode": "Por favor, verifique o IP/host ou o Número de Nó fornecido - se tem a certeza de que a sua informação está correta, o Tibber Pulse está a comunicar através de um protocolo que ainda não foi implementado - por favor, crie um log de DEBUG e abra uma questão no GitHub para que existam dados de exemplo deste protocolo.",
+      "unknown_device": "A bridge não indicou nenhum Pulse. Verifique se o Pulse aparece como nó na interface web da bridge.",
+      "node_not_found": "A bridge não tem nenhum Pulse com este número de nó. Números de nó encontrados: {nodes}"
     },
     "step": {
       "reauth_confirm": {

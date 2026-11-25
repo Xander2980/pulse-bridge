@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.1] – 2026-11-25
+
+### Fixed
+
+- Setup: if the bridge has no Pulse under the entered node number, the form now names the node numbers the bridge reports and, if there is only one, fills it in. The previous message pointed to the `nodes.json` URL and did not say what was wrong.
+- CI: the HACS action runs only in this repository.
+
 ## [1.0.0] – 2026-11-25
 
 First release as the independent project **Pulse Bridge for Tibber**, based on [marq24/ha-tibber-pulse-local](https://github.com/marq24/ha-tibber-pulse-local) (commit `1fe05f9`, Apache-2.0). The version numbering starts anew and is not related to the version numbers of the original project.
@@ -31,5 +38,6 @@ First release as the independent project **Pulse Bridge for Tibber**, based on [
 
 - Unit tests for the bridge client and a CI workflow for lint and tests.
 
-[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/Xander2980/pulse-bridge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Xander2980/pulse-bridge/releases/tag/v1.0.0

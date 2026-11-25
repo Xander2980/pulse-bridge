@@ -268,6 +268,7 @@ class PulseBridgeClient:
         # When we support multiple pulse via one brigde, we need to handle multiple device
         # ids (that we collect) in the eui_list...
         self.node_eui_list = None
+        self.node_id_list = None
 
         self.ws_connected = False
         self.ws_supported = True
@@ -365,6 +366,8 @@ class PulseBridgeClient:
     async def get_eui_for_node(self):
         # this must be called when we need a device_id... (when we receive data via websocket)
         self.node_eui_list = []
+        # node numbers the bridge reports - used by the config flow to tell the user which node to enter
+        self.node_id_list = []
         try:
             async with self.web_session.get(self.url_metadata, headers=self.REQ_HEADERS_BASIC_AUTH, ssl=False, timeout=10.0) as res:
                 # F-09: a wrong password must be reported to HA (reauth) - not just logged
@@ -382,6 +385,10 @@ class PulseBridgeClient:
 
                             a_eui = str(a_eui).lower()
                             self.node_eui_list.append(a_eui)
+                            try:
+                                self.node_id_list.append(int(a_node_obj.get("node_id")))
+                            except (TypeError, ValueError):
+                                pass
 
                             # have we already set our internal device id?
                             if self.node_device_id is not None:

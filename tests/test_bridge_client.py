@@ -147,3 +147,45 @@ async def test_oversized_frame_is_rejected():
     assert buffers == []
     assert bridge.ws_connected is False
     assert bridge.ws_writer is None
+
+
+# ---------------------------------------------------------------- config flow: report the node numbers of the bridge
+class _FakeResponse:
+    def __init__(self, status, payload):
+        self.status = status
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    async def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    def __init__(self, response):
+        self._response = response
+
+    def get(self, *args, **kwargs):
+        return self._response
+
+
+def test_unknown_node_reports_available_node_numbers():
+    nodes = [{"node_id": 3, "eui": "AABBCCDDEEFF0011"}]
+    bridge = PulseBridgeClient(host="127.0.0.1", pwd="test", websession=_FakeSession(_FakeResponse(200, nodes)), node_num=1)
+    asyncio.run(bridge.get_eui_for_node())
+    assert bridge.node_device_id is None
+    assert bridge.node_id_list == [3]
+
+
+def test_matching_node_sets_device_id():
+    nodes = [{"node_id": 3, "eui": "AABBCCDDEEFF0011"}]
+    bridge = PulseBridgeClient(host="127.0.0.1", pwd="test", websession=_FakeSession(_FakeResponse(200, nodes)), node_num=3)
+    asyncio.run(bridge.get_eui_for_node())
+    assert bridge.node_device_id == "aabbccddeeff0011"

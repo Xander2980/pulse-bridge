@@ -93,10 +93,12 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._default_ignore_errors = False
         self._default_obis_codes = None
         self._node_device_id = None
+        self._found_nodes = None
 
     async def _test_connection(self, host, pwd, node_num):
         self._errors = {}
         self._node_device_id = None
+        self._found_nodes = None
         try:
             bridge = PulseBridgeClient(host=host, pwd=pwd, websession=async_get_clientsession(self.hass), node_num=node_num)
             try:
@@ -111,6 +113,11 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         return await self._test_data_available(bridge, host)
                     else:
                         self._errors[CONF_HOST] = "unknown_mode"
+                elif bridge.node_id_list:
+                    # the bridge answered, but has no node with the entered number - tell the user which ones exist
+                    self._found_nodes = sorted(set(bridge.node_id_list))
+                    self._errors[CONF_NODE_NUMBER] = "node_not_found"
+                    _LOGGER.warning(f"_test_connection(): bridge at {host} has no node {node_num} - available nodes: {self._found_nodes}")
                 else:
                     self._errors[CONF_HOST] = "unknown_device"
 
@@ -258,7 +265,11 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._abort_if_unique_id_configured()
                     return self.async_create_entry(title=name, data=a_data)
             else:
-                if self._node_device_id is not None:
+                if self._found_nodes:
+                    # only one node at the bridge: suggest it in the form
+                    if len(self._found_nodes) == 1:
+                        user_input = {**user_input, CONF_NODE_NUMBER: self._found_nodes[0]}
+                elif self._node_device_id is not None:
                     _LOGGER.error(f"async_step_user(): Could not successfully read data from your Tibber Pulse Bridge at '{host}'. The specified host is fine - but the Integration could not detect the protocol - please enable the debug log to receive more details.")
                 else:
                     _LOGGER.error(f"async_step_user(): Could not connect to Tibber Pulse Bridge at '{host}', check host ip address")
@@ -300,7 +311,8 @@ class PulseBridgeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }),
                 user_input,
             ),
-            description_placeholders={"repo": "https://github.com/Xander2980/pulse-bridge"},
+            description_placeholders={"repo": "https://github.com/Xander2980/pulse-bridge",
+                                      "nodes": ", ".join(str(n) for n in (self._found_nodes or []))},
             last_step=True,
             errors=self._errors,
         )

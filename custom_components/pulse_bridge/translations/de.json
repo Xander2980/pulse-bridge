@@ -11,7 +11,8 @@
       "unknown": "Unbekannter Fehler",
       "no_data": "Es konnten keine Daten abgerufen werden",
       "unknown_mode": "Bitte prüfe die IP/Host bzw. die Node-Nummer - Wenn Du dir sicher bist, dass Deine Informationen korrekt sind, dann kommuniziert der Tibber Pulse über ein noch nicht implementiertes Protokoll. Bitte erstelle auf GitHub ein Issue mit DEBUG-Log-Ausgaben, damit Beispieldaten für das Protokoll vorliegen.",
-      "unknown_device": "Bitte prüfe die IP/Host bzw. die Node-Nummer - Es konnte keine Geräte-ID ermittelt werden - prüfe die URL: `http://admin:[BRIDGE_PASSWORD]@[DEINE_IP]/nodes.json`"
+      "unknown_device": "Die Bridge hat keinen Pulse gemeldet. Prüfe, ob der Pulse in der Weboberfläche der Bridge als Node angezeigt wird.",
+      "node_not_found": "Die Bridge kennt unter dieser Node-Nummer keinen Pulse. Gefundene Node-Nummern: {nodes}"
     },
     "step": {
       "reauth_confirm": {
